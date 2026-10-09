@@ -1,330 +1,353 @@
-import { Fragment, useState, useEffect } from 'react';
-import { ShieldCheck, RefreshCw, ChevronDown, ChevronRight, Download, RotateCw } from 'lucide-react';
-import { Btn, Page, SectionLabel, Stat, Tag, Th, statusTone } from '../components/ui';
-import { fetchExperiments } from '../services/api';
-import type { AuditStatus, Experiment } from '../types';
-import { useWorkbench } from '../workbench/store';
-import { METRIC_TOLERANCE, overallStatus } from '../workbench/audit';
-
-const FILTERS = ['ALL', 'PASS', 'WARNING', 'FAIL', 'NOT CHECKED'] as const;
-
-function Detail({ label, children, tone }: { label: string; children: React.ReactNode; tone?: string }) {
-  return (
-    <div>
-      <dt className={`caps !text-[10px] ${tone ?? ''}`}>{label}</dt>
-      <dd className="text-text mt-0.5 whitespace-pre-wrap break-words">{children}</dd>
-    </div>
-  );
-}
+import { useState, useEffect } from 'react';
+import { 
+  ShieldCheck, 
+  AlertCircle, 
+  CheckCircle, 
+  HelpCircle, 
+  RefreshCw, 
+  ChevronDown,
+  ChevronRight,
+  Filter
+} from 'lucide-react';
+import { runAudit, fetchExperiments, fetchDatasetsVault, activateDatasetInVault } from '../services/api';
+import type { AuditReport, Experiment, AuditStatus } from '../types';
 
 export default function ReproducibilityAudit() {
-  const wb = useWorkbench();
-  const { audit, auditRunning, runAuditNow, findings, reproduction, reproducing } = wb;
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [selectedExpId, setSelectedExpId] = useState<string>("exp-baseline");
   const [comparisonExpId, setComparisonExpId] = useState<string>("");
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<(typeof FILTERS)[number]>("ALL");
+  const [datasets, setDatasets] = useState<any[]>([]);
+  const [activeDatasetId, setActiveDatasetId] = useState<string>("");
+  const [auditReport, setAuditReport] = useState<AuditReport | null>(null);
+  const [isRunning, setIsRunning] = useState<boolean>(false);
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string>("ALL");
+
+  const loadAuditData = () => {
+    fetchExperiments().then(res => setExperiments(res.data));
+    fetchDatasetsVault().then(res => {
+      setDatasets(res.datasets || []);
+      if (res.active_dataset_id) {
+        setActiveDatasetId(res.active_dataset_id);
+      }
+    });
+    runAudit("exp-baseline").then(res => setAuditReport(res.data));
+  };
 
   useEffect(() => {
-    const load = () => {
-      fetchExperiments().then(res => setExperiments(res.data));
-      void runAuditNow("exp-baseline");
-    };
-    load();
-    window.addEventListener('dataset-changed', load);
-    return () => window.removeEventListener('dataset-changed', load);
-  }, [runAuditNow]);
+    loadAuditData();
+    const handler = () => loadAuditData();
+    window.addEventListener('dataset-changed', handler);
+    return () => window.removeEventListener('dataset-changed', handler);
+  }, []);
 
-  const handleStartAudit = () => runAuditNow(selectedExpId, comparisonExpId || undefined);
-
-  const count = (s: AuditStatus) => findings.filter(f => f.status === s).length;
-  const shown = findings.filter(f => statusFilter === 'ALL' || f.status === statusFilter);
-  const report = audit?.report;
-  const backendShown = (report?.findings || []).filter(f => statusFilter === 'ALL' || f.status === statusFilter);
-  const verdict = overallStatus(findings);
-
-  const selectClass =
-    'h-7 min-w-0 max-w-[280px] bg-background border border-border rounded-md px-2 text-xs text-text cursor-pointer focus:outline-none focus:border-primary';
-
-  const toggle = (id: string) => setExpanded(expanded === id ? null : id);
-  const chevron = (open: boolean) =>
-    open ? (
-      <ChevronDown className="w-3.5 h-3.5 text-muted inline mr-1.5 align-[-2px]" />
-    ) : (
-      <ChevronRight className="w-3.5 h-3.5 text-muted inline mr-1.5 align-[-2px]" />
+  const handleStartAudit = async () => {
+    setIsRunning(true);
+    const res = await runAudit(
+      selectedExpId, 
+      comparisonExpId || undefined
     );
+    setAuditReport(res.data);
+    setIsRunning(false);
+  };
+
+  const handleSwitchDataset = async (dsId: string) => {
+    setActiveDatasetId(dsId);
+    try {
+      await activateDatasetInVault(dsId);
+      window.dispatchEvent(new Event('dataset-changed'));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const getStatusBadge = (status: AuditStatus) => {
+    switch (status) {
+      case 'PASS':
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-semibold bg-primary/10 text-primary border border-primary/20">
+            <CheckCircle className="w-3 h-3 mr-1" /> PASS
+          </span>
+        );
+      case 'WARNING':
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-semibold bg-warning/10 text-warning border border-warning/20">
+            <AlertCircle className="w-3 h-3 mr-1" /> WARNING
+          </span>
+        );
+      case 'FAIL':
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-semibold bg-error/10 text-error border border-error/20">
+            <AlertCircle className="w-3 h-3 mr-1" /> FAIL
+          </span>
+        );
+      default:
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-semibold bg-border/60 text-muted border border-border">
+            <HelpCircle className="w-3 h-3 mr-1" /> NOT CHECKED
+          </span>
+        );
+    }
+  };
+
+  const filteredFindings = auditReport?.findings.filter(f => {
+    if (statusFilter === "ALL") return true;
+    return f.status === statusFilter;
+  }) || [];
 
   return (
-    <Page
-      title="Reproducibility audit"
-      hint={wb.source ? `Workspace dataset: ${wb.source.name}` : 'No dataset loaded in the workspace'}
-      actions={
-        <>
-          <Btn onClick={wb.exportAudit}>
-            <Download className="w-3.5 h-3.5 mr-1.5 text-muted" />
-            Export report
-          </Btn>
-          <Btn onClick={() => void wb.rerunPipeline()} disabled={reproducing} title="Runs all four pipeline stages on the backend and compares the metrics with the documented baseline">
-            <RotateCw className={`w-3.5 h-3.5 mr-1.5 text-muted ${reproducing ? 'animate-spin' : ''}`} />
-            {reproducing ? 'Rerunning pipeline…' : 'Rerun pipeline and compare'}
-          </Btn>
-          <Btn variant="primary" onClick={handleStartAudit} disabled={auditRunning}>
-            {auditRunning ? <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5 mr-1.5" />}
-            {auditRunning ? 'Auditing…' : 'Run audit'}
-          </Btn>
-        </>
-      }
-    >
-      {/* Target & comparison run selector */}
-      <div className="min-h-11 px-4 py-1.5 border-b border-border flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs">
-        <label className="flex items-center gap-2 min-w-0" title="The run whose provenance and reproducibility will be verified">
-          <span className="text-muted whitespace-nowrap">Target run</span>
-          <select value={selectedExpId} onChange={(e) => setSelectedExpId(e.target.value)} className={selectClass}>
-            {experiments.map(exp => (
-              <option key={exp.id} value={exp.id}>
-                {exp.name} ({exp.id}){exp.is_baseline ? ' · baseline' : ''}
-              </option>
-            ))}
-          </select>
-        </label>
+    <div className="space-y-6 max-w-7xl mx-auto pb-10">
+      {/* Header */}
+      <div className="border-b border-border pb-5 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-text tracking-tight">Reproducibility Audit Workspace</h1>
+          <p className="text-sm text-muted mt-1">
+            Systematic verification across dataset integrity, pipeline provenance, configuration, environment, and evaluation metrics.
+          </p>
+        </div>
 
-        <label className="flex items-center gap-2 min-w-0" title="Check metric drift or configuration divergence against another run">
-          <span className="text-muted whitespace-nowrap">Compare with</span>
-          <select value={comparisonExpId} onChange={(e) => setComparisonExpId(e.target.value)} className={selectClass}>
-            <option value="">None (baseline reference)</option>
-            {experiments.filter(e => e.id !== selectedExpId).map(exp => (
-              <option key={exp.id} value={exp.id}>
-                {exp.name} ({exp.id})
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <span className="text-muted" title="A rerun within this distance of the baseline metrics counts as matching">
-          Tolerance <span className="text-text tabular-nums">±{METRIC_TOLERANCE}</span>
-        </span>
-
-        <div className="ml-auto flex items-center rounded-md border border-border bg-background p-px">
-          {FILTERS.map(filter => (
-            <button
-              key={filter}
-              onClick={() => setStatusFilter(filter)}
-              aria-pressed={statusFilter === filter}
-              className={`h-6 px-2 rounded text-[11px] font-medium lowercase cursor-pointer ${
-                statusFilter === filter ? 'bg-raised text-text' : 'text-muted hover:text-text'
-              }`}
+        <div className="flex items-center space-x-3">
+          <div className="flex items-center bg-surface border border-border rounded pl-2">
+            <span className="text-[10px] text-muted font-bold uppercase tracking-wider mr-2">Environment:</span>
+            <select 
+              value={activeDatasetId} 
+              onChange={(e) => handleSwitchDataset(e.target.value)}
+              className="bg-transparent text-xs text-text py-2 pr-2 focus:outline-none cursor-pointer"
             >
-              {filter}
-            </button>
-          ))}
+              {datasets.map(ds => (
+                <option key={ds.id} value={ds.id}>
+                  {ds.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <button 
+            onClick={handleStartAudit}
+            disabled={isRunning}
+            className="inline-flex items-center px-4 py-2 bg-primary text-white text-xs font-semibold rounded hover:bg-primary/90 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
+          >
+            {isRunning ? (
+              <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+            ) : (
+              <ShieldCheck className="w-3.5 h-3.5 mr-1.5" />
+            )}
+            {isRunning ? 'Auditing Artifacts...' : 'Run Audit'}
+          </button>
         </div>
       </div>
 
-      {/* Summary */}
-      <div className="grid grid-cols-2 lg:grid-cols-6">
-        <Stat
-          label="Workspace verdict"
-          value={<Tag tone={statusTone(verdict)}>{verdict}</Tag>}
-          sub="Worst result among the checks that could run"
-        />
-        <Stat label="Passed" value={<span className="tabular-nums">{count('PASS')}</span>} />
-        <Stat label="Warnings" value={<span className="tabular-nums">{count('WARNING')}</span>} />
-        <Stat label="Failures" value={<span className="tabular-nums">{count('FAIL')}</span>} />
-        <Stat label="Not checked" value={<span className="tabular-nums">{count('NOT CHECKED')}</span>} sub="Information was not available" />
-        <Stat
-          label="Reproduction"
-          value={reproduction ? <Tag tone={statusTone(findings.find(f => f.id === 'reproduction')?.status)}>{findings.find(f => f.id === 'reproduction')?.status}</Tag> : <Tag>not attempted</Tag>}
-          sub={reproduction ? new Date(reproduction.at).toLocaleString() : 'No rerun in this session'}
-        />
-      </div>
-
-      {/* Checks derived from the workspace and live metadata */}
-      <SectionLabel count={shown.length} aside="Computed from the loaded dataset, the recorded steps and live backend metadata">
-        Experiment checks
-      </SectionLabel>
-      <div className="overflow-x-auto">
-        <table className="sheet">
-          <thead>
-            <tr>
-              <th className="rn"></th>
-              <Th>check</Th>
-              <Th>what was found</Th>
-              <Th>result</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((f, idx) => {
-              const open = expanded === f.id;
-              return (
-                <Fragment key={f.id}>
-                  <tr className={`is-clickable ${open ? 'is-selected' : ''}`} onClick={() => toggle(f.id)}>
-                    <td className="rn">{idx + 1}</td>
-                    <td className="font-medium">
-                      <button type="button" aria-expanded={open} className="cursor-pointer text-left">
-                        {chevron(open)}
-                        {f.check}
-                      </button>
-                    </td>
-                    <td className="wrap text-xs text-muted min-w-[280px]">{f.found}</td>
-                    <td><Tag tone={statusTone(f.status)}>{f.status}</Tag></td>
-                  </tr>
-                  {open && (
-                    <tr>
-                      <td className="rn"></td>
-                      <td colSpan={3} className="wrap !bg-background">
-                        <dl className="max-w-3xl space-y-2.5 text-xs py-1">
-                          <Detail label="What was checked">{f.check}</Detail>
-                          <Detail label="What was found">{f.found}</Detail>
-                          <Detail label="Evidence"><span className="font-mono break-all">{f.evidence}</span></Detail>
-                          <Detail label="Why it matters">{f.why}</Detail>
-                          <Detail label="Recommended next action">{f.action}</Detail>
-                        </dl>
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              );
-            })}
-            {shown.length === 0 && (
-              <tr>
-                <td className="rn"></td>
-                <td colSpan={3} className="text-muted">No checks have this result.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Reproduction logs */}
-      {reproduction?.logs && reproduction.logs.length > 0 && (
-        <>
-          <SectionLabel count={reproduction.logs.length} aside={reproduction.runId}>Rerun output</SectionLabel>
-          <div className="overflow-x-auto">
-            <table className="sheet">
-              <thead>
-                <tr>
-                  <th className="rn"></th>
-                  <Th>stage</Th>
-                  <Th t="#" className="num">exit code</Th>
-                  <Th>output</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {reproduction.logs.map((log, idx) => (
-                  <tr key={log.stage}>
-                    <td className="rn">{idx + 1}</td>
-                    <td className="font-medium">{log.stage}</td>
-                    <td className="num">{log.returncode}</td>
-                    <td className="wrap font-mono text-xs">
-                      {log.stdout && <p>{log.stdout}</p>}
-                      {log.stderr && <p className="text-error">{log.stderr}</p>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-
-      {/* Findings reported by the backend audit endpoint */}
-      <SectionLabel
-        count={report ? backendShown.length : undefined}
-        aside={
-          audit ? (
-            audit.isReal ? (
-              <>
-                <span>audit {report!.audit_id} · Python {report!.summary.python_version}</span>
-                <Tag tone="green">live backend</Tag>
-              </>
-            ) : (
-              <Tag tone="amber">demo data</Tag>
-            )
-          ) : undefined
-        }
-      >
-        Pipeline audit (backend)
-      </SectionLabel>
-      {audit && !audit.isReal && (
-        <p className="px-4 py-2 border-b border-border bg-warning/10 text-xs text-warning">
-          <span className="font-semibold">DEMO DATA.</span> The backend is offline, so the rows below are a built-in sample and are not checks of your project. They are excluded from the verdict above.
-        </p>
-      )}
-      {!audit ? (
-        <p className="px-4 py-3 text-xs text-muted">{auditRunning ? 'Running the audit…' : 'Not run yet. Use Run audit.'}</p>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="sheet">
-            <thead>
-              <tr>
-                <th className="rn"></th>
-                <Th>check</Th>
-                <Th>category</Th>
-                <Th>result</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {backendShown.map((finding, idx) => {
-                const id = `backend:${finding.name}`;
-                const open = expanded === id;
+      {/* Target & Comparison Run Selector */}
+      <div className="bg-surface p-5 rounded-lg border border-border shadow-xs">
+        <h2 className="text-xs font-bold text-muted uppercase tracking-wider mb-3">
+          Audit Configuration
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-medium text-text mb-1">Target Experiment Run</label>
+            <select 
+              value={selectedExpId} 
+              onChange={(e) => setSelectedExpId(e.target.value)}
+              className="w-full bg-background border border-border rounded p-2 text-xs text-text focus:outline-none focus:border-primary"
+            >
+              {experiments.map(exp => {
+                const datasetName = (exp as any).dataset_name || (exp.is_baseline ? "Wine Quality (Baseline)" : "Custom Dataset");
                 return (
-                  <Fragment key={id}>
-                    <tr className={`is-clickable ${open ? 'is-selected' : ''}`} onClick={() => toggle(id)}>
-                      <td className="rn">{idx + 1}</td>
-                      <td className="font-medium">
-                        <button type="button" aria-expanded={open} className="cursor-pointer text-left">
-                          {chevron(open)}
-                          {finding.name}
-                        </button>
-                      </td>
-                      <td className="text-muted">{finding.category}</td>
-                      <td><Tag tone={statusTone(finding.status)}>{finding.status}</Tag></td>
-                    </tr>
-                    {open && (
-                      <tr>
-                        <td className="rn"></td>
-                        <td colSpan={3} className="wrap !bg-background">
-                          <dl className="max-w-3xl space-y-2.5 text-xs py-1">
-                            <Detail label="Explanation">{finding.explanation}</Detail>
-                            <Detail label="Evidence"><span className="font-mono break-all">{finding.evidence}</span></Detail>
-                            {finding.action && <Detail label="Recommended next action">{finding.action}</Detail>}
-                          </dl>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
+                  <option key={exp.id} value={exp.id}>
+                    [{datasetName}] {exp.name} ({exp.id})
+                  </option>
                 );
               })}
-              {backendShown.length === 0 && (
-                <tr>
-                  <td className="rn"></td>
-                  <td colSpan={3} className="text-muted">No backend findings have this result.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+            </select>
+            <span className="text-[10px] text-muted mt-1 block">
+              Primary target whose provenance and reproducibility will be verified.
+            </span>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-text mb-1">Comparison Run (Optional)</label>
+            <select 
+              value={comparisonExpId} 
+              onChange={(e) => setComparisonExpId(e.target.value)}
+              className="w-full bg-background border border-border rounded p-2 text-xs text-text focus:outline-none focus:border-primary"
+            >
+              <option value="">None (Audit against baseline reference)</option>
+              {experiments.filter(e => e.id !== selectedExpId).map(exp => {
+                const datasetName = (exp as any).dataset_name || (exp.is_baseline ? "Wine Quality (Baseline)" : "Custom Dataset");
+                return (
+                  <option key={exp.id} value={exp.id}>
+                    [{datasetName}] {exp.name} ({exp.id})
+                  </option>
+                );
+              })}
+            </select>
+            <span className="text-[10px] text-muted mt-1 block">
+              Evaluate metric drift or configuration divergence against another run.
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+          <div className="bg-background/60 p-3 rounded border border-border flex flex-col justify-between col-span-1 md:col-span-3">
+            <div>
+              <span className="text-[11px] text-muted font-medium">Evaluation Tolerance</span>
+              <p className="text-xs font-mono font-semibold text-text mt-0.5">±0.001 (0.1% Metric Threshold)</p>
+            </div>
+            <p className="text-[10px] text-muted mt-2">
+              Results within tolerance are classified as verified reproduced.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Audit Summary Status Card */}
+      {auditReport && (
+        <div className="bg-surface p-6 rounded-lg border border-border shadow-xs">
+          <div className="flex flex-col md:flex-row md:items-center justify-between pb-4 border-b border-border gap-4">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted">Audited Dataset:</span>
+                <span className="text-xs font-bold text-primary bg-primary/10 px-2 py-0.5 rounded border border-primary/20">
+                  {auditReport.summary.dataset_name || auditReport.active_dataset?.name || 'Active Dataset'}
+                </span>
+                <span className="text-xs text-muted">• Audit ID: <code className="text-text font-mono">{auditReport.audit_id}</code></span>
+              </div>
+              <div className="flex items-center space-x-3 mt-1.5">
+                <span className="text-lg font-bold text-text">Overall Audit Verdict:</span>
+                {getStatusBadge(auditReport.overall_status)}
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-6 text-xs">
+              <div className="text-center">
+                <span className="block text-muted">Checks Passed</span>
+                <span className="text-sm font-bold font-mono text-primary">{auditReport.summary.pass_count}</span>
+              </div>
+              <div className="text-center">
+                <span className="block text-muted">Warnings</span>
+                <span className="text-sm font-bold font-mono text-warning">{auditReport.summary.warning_count}</span>
+              </div>
+              <div className="text-center">
+                <span className="block text-muted">Failures</span>
+                <span className="text-sm font-bold font-mono text-error">{auditReport.summary.fail_count}</span>
+              </div>
+              <div className="text-center border-l border-border pl-4">
+                <span className="block text-muted">Accuracy</span>
+                <span className="text-sm font-bold font-mono text-text">{auditReport.summary.accuracy.toFixed(4)}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center space-x-2">
+              <span className="text-xs font-medium text-muted flex items-center">
+                <Filter className="w-3.5 h-3.5 mr-1" /> Filter Findings:
+              </span>
+              {(['ALL', 'PASS', 'WARNING', 'FAIL'] as const).map(filter => (
+                <button
+                  key={filter}
+                  onClick={() => setStatusFilter(filter)}
+                  className={`px-2.5 py-1 rounded text-xs font-semibold cursor-pointer transition-colors ${
+                    statusFilter === filter 
+                      ? 'bg-primary text-white' 
+                      : 'bg-background border border-border text-muted hover:text-text'
+                  }`}
+                >
+                  {filter}
+                </button>
+              ))}
+            </div>
+
+            <span className="text-[11px] text-muted">
+              Evaluated on Python {auditReport.summary.python_version} against DVC tracking manifest
+            </span>
+          </div>
         </div>
       )}
 
-      {/* Recommendations */}
-      {report && report.recommendations.length > 0 && (
-        <>
-          <SectionLabel count={report.recommendations.length} aside={audit!.isReal ? undefined : <Tag tone="amber">demo data</Tag>}>
-            Backend recommendations
-          </SectionLabel>
-          <table className="sheet">
-            <tbody>
-              {report.recommendations.map((rec, i) => (
-                <tr key={i}>
-                  <td className="rn">{i + 1}</td>
-                  <td className="wrap">{rec}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
+      {/* Categorized Findings List */}
+      <div className="space-y-4">
+        {filteredFindings.map((finding, idx) => {
+          const isExpanded = expandedIndex === idx;
+          return (
+            <div 
+              key={finding.name} 
+              className="bg-surface rounded-lg border border-border shadow-xs overflow-hidden transition-all"
+            >
+              {/* Finding Summary Bar */}
+              <div 
+                onClick={() => setExpandedIndex(isExpanded ? null : idx)}
+                className="p-4 flex items-center justify-between cursor-pointer hover:bg-background/40 transition-colors"
+              >
+                <div className="flex items-center space-x-3">
+                  <button className="text-muted p-1">
+                    {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                  </button>
+                  <div>
+                    <span className="text-[10px] font-mono text-muted uppercase tracking-wider block">
+                      Category: {finding.category}
+                    </span>
+                    <h3 className="text-sm font-bold text-text mt-0.5">
+                      {finding.name}
+                    </h3>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-4">
+                  {getStatusBadge(finding.status)}
+                </div>
+              </div>
+
+              {/* Expandable Details & Evidence */}
+              {isExpanded && (
+                <div className="p-4 pt-0 border-t border-border/60 bg-background/30 space-y-3 text-xs">
+                  <div>
+                    <h4 className="font-semibold text-text uppercase tracking-wider text-[11px] mb-1">
+                      Explanation & Reproducibility Impact
+                    </h4>
+                    <p className="text-muted leading-relaxed">
+                      {finding.explanation}
+                    </p>
+                  </div>
+
+                  <div className="p-3 bg-surface rounded border border-border">
+                    <span className="font-semibold text-text uppercase tracking-wider text-[10px] block mb-1">
+                      Empirical Evidence / Artifact Reference
+                    </span>
+                    <code className="text-xs font-mono text-primary block break-all">
+                      {finding.evidence}
+                    </code>
+                  </div>
+
+                  {finding.action && (
+                    <div className="p-3 rounded border border-warning/30 bg-warning/5 text-text">
+                      <span className="font-semibold text-warning block mb-0.5">Recommended Remediation:</span>
+                      <p className="text-muted">{finding.action}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Recommendations & Next Steps */}
+      {auditReport && (
+        <div className="bg-surface p-6 rounded-lg border border-border shadow-xs">
+          <h2 className="text-sm font-bold text-text uppercase tracking-wider mb-3">
+            Recommended Next Steps for Full Audit Compliance
+          </h2>
+          <ul className="space-y-2 text-xs text-muted">
+            {auditReport.recommendations.map((rec, i) => (
+              <li key={i} className="flex items-start">
+                <span className="w-1.5 h-1.5 rounded-full bg-primary mt-1.5 mr-2 shrink-0"></span>
+                <span>{rec}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
-    </Page>
+    </div>
   );
 }

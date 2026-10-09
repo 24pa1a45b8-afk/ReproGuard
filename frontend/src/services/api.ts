@@ -1,6 +1,7 @@
 import type { ProjectInfo, PipelineStage, Experiment, ProvenanceData, AuditReport } from '../types';
 
-const API_BASE = 'http://127.0.0.1:8000/api';
+// Set VITE_API_BASE at build time when the backend is not on this machine (e.g. a deployed site)
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/api';
 
 export const fallbackProject: ProjectInfo = {
   name: "Wine Quality Classification",
@@ -102,6 +103,7 @@ export const fallbackExperiments: Experiment[] = [
   {
     id: "exp-baseline",
     name: "Baseline (HEAD)",
+    dataset_name: "Wine Quality (Baseline)",
     created_at: "2026-03-20T10:15:00Z",
     dataset_fingerprint: "2daeecee174368f8a33b82c8cccae3a5",
     model: "RandomForestClassifier",
@@ -123,6 +125,7 @@ export const fallbackExperiments: Experiment[] = [
   {
     id: "exp-rf-depth12",
     name: "Tuned Forest (Depth 12)",
+    dataset_name: "Wine Quality (Baseline)",
     created_at: "2026-03-21T14:40:00Z",
     dataset_fingerprint: "2daeecee174368f8a33b82c8cccae3a5",
     model: "RandomForestClassifier",
@@ -144,6 +147,7 @@ export const fallbackExperiments: Experiment[] = [
   {
     id: "exp-rf-noseed",
     name: "Unseeded Trial",
+    dataset_name: "Custom Dataset",
     created_at: "2026-03-22T08:20:00Z",
     dataset_fingerprint: "2daeecee174368f8a33b82c8cccae3a5",
     model: "RandomForestClassifier",
@@ -177,12 +181,25 @@ export async function fetchProject(): Promise<{ data: ProjectInfo; isReal: boole
   return { data: fallbackProject, isReal: false };
 }
 
-export async function fetchPipeline(): Promise<{ data: PipelineStage[]; isReal: boolean }> {
+export async function fetchBackendRepoPath(): Promise<string | null> {
+  try {
+    const res = await fetch(`${API_BASE}/health`);
+    if (res.ok) {
+      const data = await res.json();
+      return data.repo_path ?? null;
+    }
+  } catch (err) {
+    console.warn("Backend not available", err);
+  }
+  return null;
+}
+
+export async function fetchPipeline():Promise<{ data: PipelineStage[]; isReal: boolean; resultsStale?: boolean; resultsDatasetName?: string | null }> {
   try {
     const res = await fetch(`${API_BASE}/pipeline`);
     if (res.ok) {
       const json = await res.json();
-      return { data: json.stages, isReal: true };
+      return { data: json.stages, isReal: true, resultsStale: json.results_stale, resultsDatasetName: json.results_dataset_name };
     }
   } catch (err) {
     console.warn("Backend not available, using fallback", err);
@@ -272,12 +289,22 @@ export async function fetchExperiments(): Promise<{ data: Experiment[]; isReal: 
   return { data: fallbackExperiments, isReal: false };
 }
 
-export async function runAudit(experimentId: string = "exp-baseline", comparisonId?: string): Promise<{ data: AuditReport; isReal: boolean }> {
+export async function runAudit(
+  experimentId?: string, 
+  comparisonId?: string,
+  targetDatasetId?: string,
+  comparisonDatasetId?: string
+): Promise<{ data: AuditReport; isReal: boolean }> {
   try {
     const res = await fetch(`${API_BASE}/audits`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ experiment_id: experimentId, comparison_id: comparisonId })
+      body: JSON.stringify({ 
+        experiment_id: experimentId, 
+        comparison_id: comparisonId,
+        target_dataset_id: targetDatasetId,
+        comparison_dataset_id: comparisonDatasetId
+      })
     });
     if (res.ok) {
       const data = await res.json();
@@ -292,7 +319,7 @@ export async function runAudit(experimentId: string = "exp-baseline", comparison
     data: {
       audit_id: `audit-${Date.now()}`,
       timestamp: new Date().toISOString(),
-      experiment_id: experimentId,
+      experiment_id: experimentId || "exp-baseline",
       comparison_id: comparisonId,
       overall_status: "PASS",
       summary: {
@@ -366,7 +393,7 @@ export async function triggerReproduction(stage?: string): Promise<{ success: bo
     });
     if (res.ok) {
       const data = await res.json();
-      return { success: true, message: data.message, isReal: true };
+      return { success: data.status !== "error", message: data.message, isReal: true };
     }
   } catch (err) {
     console.warn("Backend reproduction call failed", err);
@@ -414,25 +441,30 @@ export async function fetchDatasetStatus(): Promise<DatasetStatus> {
   };
 }
 
-export async function fetchDatasetsVault(): Promise<{ active_dataset_id: string; active_dataset: any; datasets: any[] }> {
+export async function fetchDatasetsVault(): Promise<{ active_dataset_id: string; active_dataset: any; datasets: any[]; error?: string }> {
+  // The vault only ever shows what the backend has stored; no placeholder datasets.
+  let error: string;
   try {
     const res = await fetch(`${API_BASE}/datasets`);
     if (res.ok) {
       return await res.json();
     }
+    error = `Backend returned ${res.status} while loading the Dataset Vault.`;
   } catch (err) {
     console.warn("fetchDatasetsVault failed", err);
+    // A backend crash (HTTP 500) also lands here: the browser blocks the response for lacking CORS headers
+    error = "The Dataset Vault could not be loaded: the backend is not running or crashed on this request. Check the backend terminal.";
   }
-  return {
-    active_dataset_id: "ds-wine-baseline",
-    active_dataset: {
-      id: "ds-wine-baseline",
-      name: "Wine Quality (Baseline)",
-      rows: 1599,
-      md5_hash: "2daeecee174368f8a33b82c8cccae3a5"
-    },
-    datasets: []
-  };
+  return { active_dataset_id: "", active_dataset: null, datasets: [], error };
+}
+
+export async function fetchDatasetPreview(datasetId: string): Promise<{ columns: string[]; preview_rows: string[][] }> {
+  const res = await fetch(`${API_BASE}/datasets/${encodeURIComponent(datasetId)}/preview`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to load dataset preview");
+  }
+  return await res.json();
 }
 
 export async function activateDatasetInVault(datasetId: string): Promise<any> {
@@ -455,8 +487,8 @@ export async function uploadDatasetFile(file: File): Promise<any> {
     body: formData
   });
   if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || "Upload failed");
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Upload failed (server returned ${res.status})`);
   }
   return await res.json();
 }
@@ -506,15 +538,4 @@ export async function downloadArtifactFile(path: string, filename?: string): Pro
     a.click();
     document.body.removeChild(a);
   }
-}
-
-/** Fetches a repository file through the artifact endpoint; null when the backend is unreachable or the file is absent. */
-export async function fetchArtifactBlob(path: string): Promise<Blob | null> {
-  try {
-    const res = await fetch(getArtifactDownloadUrl(path));
-    if (res.ok) return await res.blob();
-  } catch (err) {
-    console.warn("fetchArtifactBlob failed", err);
-  }
-  return null;
 }

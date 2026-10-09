@@ -25,31 +25,18 @@ def main():
     with open(MODEL, "rb") as f:
         model = pickle.load(f)
 
-    if len(model.classes_) == 1:
-        proba_val = 1.0 if model.classes_[0] == 1 else 0.0
-        proba = pd.Series(proba_val, index=X.index).values
-    else:
-        proba = model.predict_proba(X)[:, 1]
-        
+    proba = model.predict_proba(X)[:, 1]
     pred = (proba >= 0.5).astype(int)
-
-    try:
-        roc = float(roc_auc_score(y, proba))
-        if pd.isna(roc):
-            roc = 0.5
-        fpr, tpr, _ = roc_curve(y, proba)
-    except ValueError:
-        roc = 0.5
-        fpr, tpr = [0.0, 1.0], [0.0, 1.0]
 
     metrics = {
         "accuracy": float(accuracy_score(y, pred)),
-        "roc_auc": roc,
+        "roc_auc": float(roc_auc_score(y, proba)),
     }
     with open(METRICS, "w") as f:
         json.dump(metrics, f, indent=2)
 
     os.makedirs(PLOTS_DIR, exist_ok=True)
+    fpr, tpr, _ = roc_curve(y, proba)
     pd.DataFrame({"fpr": fpr, "tpr": tpr}).to_csv(os.path.join(PLOTS_DIR, "roc.csv"), index=False)
 
     print(f"evaluate: {metrics}")

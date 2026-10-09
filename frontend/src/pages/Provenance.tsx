@@ -1,6 +1,13 @@
 import { useState, useEffect } from 'react';
-import { Database, Box, BarChart2, Check, X } from 'lucide-react';
-import { KV, Page, SectionLabel, Tag, Th, statusTone } from '../components/ui';
+import { 
+  Database, 
+  Box, 
+  BarChart2, 
+  ArrowRight,
+  ShieldCheck,
+  Check,
+  X
+} from 'lucide-react';
 import { fetchProvenance } from '../services/api';
 import type { ProvenanceData, ProvenanceNode } from '../types';
 
@@ -32,138 +39,152 @@ export default function Provenance() {
     }
   };
 
-  const nodes = provenance?.lineage_nodes || [];
-  const fields = selectedNode ? Object.entries(selectedNode.provenance_fields) : [];
-
   return (
-    <Page
-      title="Provenance"
-      hint="Lineage from raw dataset to evaluation metrics"
-      actions={
-        <span className="text-xs text-muted">
-          Completeness <span className="text-text font-medium tabular-nums">{provenance?.completeness_score}%</span>
-        </span>
-      }
-    >
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)]">
-        {/* Left: lineage chain as a step list */}
-        <div className="bg-background border-b lg:border-b-0 lg:border-r border-border">
-          <div className="h-9 px-4 flex items-center justify-between border-b border-border">
-            <span className="text-[11px] font-semibold text-muted tracking-widest uppercase">Lineage (HEAD)</span>
-            <span className="text-[11px] font-medium text-muted bg-border/70 rounded px-1.5 py-px">{nodes.length}</span>
-          </div>
+    <div className="space-y-6 max-w-7xl mx-auto pb-10">
+      {/* Header */}
+      <div className="border-b border-border pb-5 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-text tracking-tight">Provenance Explorer</h1>
+          <p className="text-sm text-muted mt-1">
+            End-to-end data lineage and artifact cryptographic chain from raw dataset to evaluation metrics.
+          </p>
+        </div>
 
-          <div className="p-2 space-y-0.5">
-            {nodes.map((node, index) => {
+        <div className="flex items-center space-x-2 bg-surface border border-border px-3 py-1.5 rounded-md shadow-xs">
+          <ShieldCheck className="w-4 h-4 text-primary" />
+          <span className="text-xs font-semibold text-text">
+            Lineage Completeness: {provenance?.completeness_score}%
+          </span>
+        </div>
+      </div>
+
+      {/* Visual Lineage Flow Canvas */}
+      <div className="bg-surface p-6 rounded-lg border border-border shadow-xs">
+        <h2 className="text-xs font-bold text-muted uppercase tracking-wider mb-6">
+          Artifact & Stage Lineage Chain (HEAD)
+        </h2>
+
+        <div className="overflow-x-auto pb-4">
+          <div className="min-w-[760px] flex items-center justify-between px-2">
+            {provenance?.lineage_nodes.map((node, index) => {
               const Icon = getNodeIcon(node.type);
               const isSelected = selectedNode?.id === node.id;
               return (
-                <div
-                  key={node.id}
-                  onClick={() => setSelectedNode(node)}
-                  className={`rounded-lg border px-2.5 py-2 cursor-pointer transition-colors ${
-                    isSelected ? 'bg-surface border-border shadow-xs' : 'border-transparent hover:bg-border/40'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <Icon className="w-4 h-4 text-primary shrink-0" />
-                    <span className="text-xs text-muted w-3">{index + 1}</span>
-                    <span className="text-sm text-text truncate" title={node.name}>{node.name.split('/').pop()}</span>
+                <div key={node.id} className="flex items-center flex-1 last:flex-none">
+                  {/* Node */}
+                  <div 
+                    onClick={() => setSelectedNode(node)}
+                    className={`flex flex-col items-center p-3 rounded-lg border transition-all cursor-pointer min-w-[130px] ${
+                      isSelected 
+                        ? 'border-primary bg-primary/5 ring-1 ring-primary/20 shadow-xs' 
+                        : 'border-border bg-background/50 hover:border-primary/40'
+                    }`}
+                  >
+                    <div className={`w-10 h-10 rounded-md flex items-center justify-center mb-2 ${
+                      isSelected ? 'bg-primary text-white' : 'bg-surface border border-border text-primary'
+                    }`}>
+                      <Icon className="w-5 h-5" />
+                    </div>
+
+                    <span className="text-[10px] font-mono text-muted uppercase tracking-wider block">
+                      {node.type}
+                    </span>
+                    <h3 className="text-xs font-bold text-text truncate max-w-[120px] text-center mt-0.5" title={node.name}>
+                      {node.name.split('/').pop()}
+                    </h3>
+                    <span className="text-[10px] font-mono text-muted mt-1">
+                      {node.fingerprint.slice(0, 8)}...
+                    </span>
+
+                    <span className="mt-2 text-[10px] font-semibold text-primary bg-primary/10 px-2 py-0.5 rounded">
+                      {node.status}
+                    </span>
                   </div>
 
-                  {isSelected && (
-                    <dl className="mt-2 pl-[26px]">
-                      <div className="text-[10px] font-semibold text-muted tracking-widest uppercase mb-0.5">Recorded</div>
-                      <KV k="type">{node.type}</KV>
-                      <KV k="fingerprint"><span className="font-mono">{node.fingerprint.slice(0, 8)}…</span></KV>
-                      <KV k="status"><Tag tone={statusTone(node.status)}>{node.status}</Tag></KV>
-                    </dl>
+                  {/* Connecting Arrow */}
+                  {index < provenance.lineage_nodes.length - 1 && (
+                    <div className="flex-1 flex items-center justify-center px-2">
+                      <div className="h-0.5 w-full bg-border relative">
+                        <ArrowRight className="w-3.5 h-3.5 text-muted absolute -right-1 top-1/2 -translate-y-1/2" />
+                      </div>
+                    </div>
                   )}
                 </div>
               );
             })}
           </div>
         </div>
+      </div>
 
-        {/* Right: selected node record + completeness checks */}
-        <div className="min-w-0">
-          <div className="min-h-11 px-4 py-1.5 border-b border-border flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-            <div className="flex items-baseline gap-3 min-w-0">
-              <h2 className="text-sm font-semibold text-text truncate">{selectedNode?.name}</h2>
-              <span className="text-xs text-muted whitespace-nowrap">
-                md5 <span className="font-mono text-text">{selectedNode?.fingerprint}</span>
+      {/* Details & Completeness Breakdown */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Left Column: Selected Node Provenance Details */}
+        <div className="lg:col-span-7 bg-surface p-6 rounded-lg border border-border shadow-xs space-y-5">
+          <div className="flex items-start justify-between border-b border-border pb-4">
+            <div>
+              <span className="text-[10px] font-mono uppercase bg-primary/10 text-primary px-2 py-0.5 rounded font-bold">
+                {selectedNode?.type} Provenance Record
               </span>
+              <h3 className="text-lg font-bold text-text mt-1.5">{selectedNode?.name}</h3>
+              <p className="text-xs font-mono text-muted mt-0.5">
+                Cryptographic MD5: <span className="text-text font-semibold">{selectedNode?.fingerprint}</span>
+              </p>
             </div>
-            {selectedNode && <Tag tone="green">verified</Tag>}
+            <span className="text-xs font-semibold px-2.5 py-1 rounded bg-primary/10 text-primary border border-primary/20">
+              Verified
+            </span>
           </div>
 
-          <SectionLabel count={fields.length} aside={selectedNode ? `${selectedNode.type} record` : undefined}>
-            Provenance fields
-          </SectionLabel>
-          <div className="overflow-x-auto">
-            <table className="sheet">
-              <thead>
-                <tr>
-                  <th className="rn"></th>
-                  <Th>field</Th>
-                  <Th>value</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {fields.map(([key, val], idx) => (
-                  <tr key={key}>
-                    <td className="rn">{idx + 1}</td>
-                    <td className="text-muted">{key}</td>
-                    <td className="wrap font-mono text-xs break-all">
-                      {typeof val === 'object' ? JSON.stringify(val) : String(val)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div>
+            <h4 className="text-xs font-bold text-muted uppercase tracking-wider mb-3">
+              Recorded Provenance Fields
+            </h4>
+            <div className="space-y-2">
+              {selectedNode && Object.entries(selectedNode.provenance_fields).map(([key, val]) => (
+                <div key={key} className="p-3 bg-background rounded border border-border flex items-center justify-between text-xs">
+                  <span className="font-mono text-muted">{key}</span>
+                  <span className="font-mono font-semibold text-text">
+                    {typeof val === 'object' ? JSON.stringify(val) : String(val)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Right Column: Explaining Provenance Completeness */}
+        <div className="lg:col-span-5 bg-surface p-6 rounded-lg border border-border shadow-xs space-y-4">
+          <div className="flex items-center justify-between border-b border-border pb-3">
+            <div>
+              <h3 className="text-sm font-bold text-text">Completeness Score</h3>
+              <p className="text-xs text-muted">Audited against reproducibility standards</p>
+            </div>
+            <span className="text-2xl font-bold font-mono text-primary">
+              {provenance?.completeness_score}%
+            </span>
           </div>
 
-          <SectionLabel
-            count={provenance?.checks.length}
-            aside={<>score <span className="text-text font-medium tabular-nums">{provenance?.completeness_score}%</span></>}
-          >
-            Completeness checks
-          </SectionLabel>
-          <div className="overflow-x-auto">
-            <table className="sheet">
-              <thead>
-                <tr>
-                  <th className="rn"></th>
-                  <Th>check</Th>
-                  <Th>detail</Th>
-                  <Th>result</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {provenance?.checks.map((check, idx) => (
-                  <tr key={check.name}>
-                    <td className="rn">{idx + 1}</td>
-                    <td className="font-medium">
-                      {check.passed ? (
-                        <Check className="w-3.5 h-3.5 text-accent inline mr-2 align-[-2px]" />
-                      ) : (
-                        <X className="w-3.5 h-3.5 text-warning inline mr-2 align-[-2px]" />
-                      )}
-                      {check.name}
-                    </td>
-                    <td className="wrap text-xs text-muted">{check.detail}</td>
-                    <td><Tag tone={check.passed ? 'green' : 'amber'}>{check.passed ? 'recorded' : 'missing'}</Tag></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <p className="px-4 py-2 text-xs text-muted">
-            The score reflects whether each required field is captured in version-controlled manifests (dvc.lock, params.yaml, requirements.txt).
+          <p className="text-xs text-muted leading-relaxed">
+            The completeness score reflects whether each required artifact field is captured explicitly in version-controlled manifests (<code className="font-mono">dvc.lock</code>, <code className="font-mono">params.yaml</code>, <code className="font-mono">requirements.txt</code>).
           </p>
+
+          <div className="space-y-2.5 pt-2">
+            {provenance?.checks.map(check => (
+              <div key={check.name} className="p-2.5 rounded border border-border bg-background/50 flex items-start space-x-2.5 text-xs">
+                {check.passed ? (
+                  <Check className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+                ) : (
+                  <X className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+                )}
+                <div>
+                  <span className="font-semibold text-text block">{check.name}</span>
+                  <span className="text-[11px] text-muted">{check.detail}</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
-    </Page>
+    </div>
   );
 }

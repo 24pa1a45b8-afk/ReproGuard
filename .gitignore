@@ -3,3 +3,4 @@
 /plots
 /dvc_plots
 .env
+__pycache__/

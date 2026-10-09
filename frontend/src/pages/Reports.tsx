@@ -1,6 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Download, FileText } from 'lucide-react';
-import { Btn, Page, SectionLabel, Stat, Tag, Th, statusTone } from '../components/ui';
+import { 
+  Download, 
+  FileText,
+  CheckCircle, 
+  AlertCircle,
+  Clock,
+  Database
+} from 'lucide-react';
 import { runAudit } from '../services/api';
 import type { AuditReport } from '../types';
 
@@ -117,80 +123,144 @@ export default function Reports() {
   };
 
   return (
-    <Page
-      title="Audit reports"
-      hint={report ? `${datasetName} · audit ${report.audit_id}` : 'Evidence-backed reproducibility report'}
-      actions={
-        report && (
-          <>
-            <Btn onClick={handleDownloadJSON}>
-              <Download className="w-3.5 h-3.5 mr-1.5 text-muted" />
-              JSON
-            </Btn>
-            <Btn variant="primary" onClick={handleDownloadText}>
+    <div className="space-y-6 max-w-7xl mx-auto pb-10">
+      {/* Header */}
+      <div className="border-b border-border pb-5 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-text tracking-tight">Audit Reports</h1>
+          <p className="text-sm text-muted mt-1">
+            Formal, evidence-backed reproducibility certifications and downloadable audit packages.
+          </p>
+        </div>
+
+        {report && (
+          <div className="flex flex-wrap items-center gap-2">
+            <button 
+              onClick={handleDownloadText}
+              className="inline-flex items-center px-4 py-2 bg-primary text-white text-xs font-semibold rounded hover:bg-primary/90 transition-colors shadow-xs cursor-pointer"
+            >
               <FileText className="w-3.5 h-3.5 mr-1.5" />
-              Download report (.txt)
-            </Btn>
-          </>
-        )
-      }
-    >
+              Download Human-Readable Report (.txt)
+            </button>
+
+            <button 
+              onClick={handleDownloadJSON}
+              className="inline-flex items-center px-3.5 py-2 bg-background border border-border hover:border-primary/50 text-text text-xs font-semibold rounded transition-colors shadow-xs cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5 mr-1.5 text-primary" />
+              Download Audit JSON
+            </button>
+          </div>
+        )}
+      </div>
+
       {report && (
-        <>
-          {/* Summary strip */}
-          <div className="grid grid-cols-2 lg:grid-cols-4">
-            <Stat
-              label="Verdict"
-              value={<Tag tone={statusTone(report.overall_status)}>{report.overall_status}</Tag>}
-              sub={`${report.summary.pass_count} of ${report.summary.total_checks} checks passed`}
-            />
-            <Stat label="Dataset" value={datasetName} sub={new Date(report.timestamp).toLocaleString()} />
-            <Stat
-              label="Dataset fingerprint"
-              value={
-                <span className="font-mono text-sm" title={report.summary.dataset_hash}>
-                  {report.summary.dataset_hash.slice(0, 16)}…
+        <div className="space-y-6">
+          {/* Executive Summary Card */}
+          <div className="bg-surface p-6 rounded-lg border border-border shadow-xs">
+            <div className="flex flex-col md:flex-row md:items-center justify-between pb-4 border-b border-border gap-4">
+              <div>
+                <span className="text-[11px] font-mono uppercase bg-primary/10 text-primary px-2 py-0.5 rounded font-bold">
+                  Certified Audit Dossier
                 </span>
-              }
-              sub="md5"
-            />
-            <Stat label="Model" value="RandomForestClassifier" sub={`audit ${report.audit_id}`} />
-            <Stat label="Accuracy" value={<span className="tabular-nums">{report.summary.accuracy.toFixed(4)}</span>} />
-            <Stat label="ROC-AUC" value={<span className="tabular-nums">{report.summary.roc_auc.toFixed(4)}</span>} />
-            <Stat label="Warnings" value={<span className="tabular-nums">{report.summary.warning_count}</span>} />
-            <Stat label="Failures" value={<span className="tabular-nums">{report.summary.fail_count}</span>} />
+                <h2 className="text-lg font-bold text-text mt-2 flex items-center">
+                  <Database className="w-5 h-5 mr-2 text-primary" />
+                  {datasetName} — Reproducibility Run Audit
+                </h2>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted mt-1">
+                  <span className="flex items-center">
+                    <Clock className="w-3.5 h-3.5 mr-1" />
+                    {new Date(report.timestamp).toLocaleString()}
+                  </span>
+                  <span>•</span>
+                  <span className="font-mono">ID: {report.audit_id}</span>
+                  <span>•</span>
+                  <span className="font-medium text-text">Dataset: {datasetName}</span>
+                </div>
+              </div>
+
+              <div className="text-right">
+                <span className="text-xs text-muted block">Reproducibility Verdict</span>
+                <span className={`inline-flex items-center px-3 py-1 rounded text-xs font-bold border mt-1 ${
+                  report.overall_status === 'PASS' 
+                    ? 'bg-primary/10 text-primary border-primary/20' 
+                    : report.overall_status === 'WARNING'
+                    ? 'bg-warning/10 text-warning border-warning/20'
+                    : 'bg-error/10 text-error border-error/20'
+                }`}>
+                  {report.overall_status === 'PASS' ? (
+                    <CheckCircle className="w-3.5 h-3.5 mr-1" />
+                  ) : (
+                    <AlertCircle className="w-3.5 h-3.5 mr-1" />
+                  )}
+                  {report.overall_status} ({report.summary.pass_count}/{report.summary.total_checks} Checks Passed)
+                </span>
+              </div>
+            </div>
+
+            {/* Audit Metadata Spec */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 pt-2 text-xs">
+              <div>
+                <span className="text-muted block text-[11px]">Active Dataset Fingerprint</span>
+                <span className="font-mono font-bold text-text mt-0.5 block truncate" title={report.summary.dataset_hash ?? undefined}>
+                  {report.summary.dataset_hash ? `${report.summary.dataset_hash.slice(0, 16)}...` : 'Not available'}
+                </span>
+              </div>
+              <div>
+                <span className="text-muted block text-[11px]">Model Architecture</span>
+                <span className="font-semibold text-text mt-0.5 block">RandomForestClassifier</span>
+              </div>
+              <div>
+                <span className="text-muted block text-[11px]">Evaluation Accuracy</span>
+                <span className="font-mono font-bold text-text mt-0.5 block">
+                  {report.summary.accuracy.toFixed(4)}
+                </span>
+              </div>
+              <div>
+                <span className="text-muted block text-[11px]">ROC-AUC Metric</span>
+                <span className="font-mono font-bold text-text mt-0.5 block">
+                  {report.summary.roc_auc.toFixed(4)}
+                </span>
+              </div>
+            </div>
           </div>
 
-          {/* Findings */}
-          <SectionLabel count={report.findings.length}>Audit checks and evidence</SectionLabel>
-          <div className="overflow-x-auto">
-            <table className="sheet">
-              <thead>
-                <tr>
-                  <th className="rn"></th>
-                  <Th>check</Th>
-                  <Th>category</Th>
-                  <Th>explanation</Th>
-                  <Th>evidence</Th>
-                  <Th>result</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {report.findings.map((finding, idx) => (
-                  <tr key={finding.name}>
-                    <td className="rn">{idx + 1}</td>
-                    <td className="font-medium">{finding.name}</td>
-                    <td className="text-muted">{finding.category}</td>
-                    <td className="wrap text-xs text-muted min-w-[260px]">{finding.explanation}</td>
-                    <td className="wrap font-mono text-xs break-words min-w-[260px]">{finding.evidence}</td>
-                    <td><Tag tone={statusTone(finding.status)}>{finding.status}</Tag></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          {/* Audit Findings Detail Section */}
+          <div className="bg-surface p-6 rounded-lg border border-border shadow-xs">
+            <h3 className="text-xs font-bold text-text uppercase tracking-wider mb-4">
+              All Verified Audit Checks & Evidence ({report.findings.length})
+            </h3>
+
+            <div className="space-y-3">
+              {report.findings.map(finding => (
+                <div key={finding.name} className="p-4 rounded border border-border bg-background/40">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] font-mono text-muted uppercase">
+                      {finding.category}
+                    </span>
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded ${
+                      finding.status === 'PASS' 
+                        ? 'bg-primary/10 text-primary' 
+                        : finding.status === 'WARNING' 
+                        ? 'bg-warning/10 text-warning' 
+                        : 'bg-error/10 text-error'
+                    }`}>
+                      {finding.status}
+                    </span>
+                  </div>
+                  <h4 className="text-sm font-bold text-text">{finding.name}</h4>
+                  <p className="text-xs text-muted mt-1">{finding.explanation}</p>
+                  
+                  <div className="mt-2.5 p-2 bg-surface rounded border border-border text-xs">
+                    <span className="font-semibold text-[10px] uppercase text-muted block mb-0.5">Audit Evidence:</span>
+                    <code className="font-mono text-primary text-[11px] break-all">{finding.evidence}</code>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
-        </>
+        </div>
       )}
-    </Page>
+    </div>
   );
 }

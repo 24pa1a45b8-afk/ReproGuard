@@ -1,16 +1,24 @@
 import { useState, useEffect, useRef } from 'react';
-import {
-  CheckCircle2,
-  AlertCircle,
-  Play,
-  RefreshCw,
+import { 
+  FileCode, 
+  CheckCircle2, 
+  AlertCircle, 
+  Database, 
+  Play, 
+  FileCheck, 
+  Sliders, 
+  Clock, 
+  RefreshCw, 
   X,
   UploadCloud,
   FileSpreadsheet,
   Check,
+  Terminal,
+  Activity,
+  Layers,
+  ArrowRight,
   Download
 } from 'lucide-react';
-import { Btn, KV, Page, SectionLabel, Stat, Tag, Th, statusTone } from '../components/ui';
 import { 
   fetchPipeline, 
   triggerReproduction, 
@@ -20,6 +28,7 @@ import {
   runFullPipelineExecution,
   fetchDatasetsVault,
   activateDatasetInVault,
+  fetchDatasetPreview,
   downloadArtifactFile
 } from '../services/api';
 import type { DatasetStatus } from '../services/api';
@@ -33,7 +42,7 @@ export default function PipelineExplorer() {
   const [execResult, setExecResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Multi-Dataset Vault & Library State
-  const [vaultData, setVaultData] = useState<{ active_dataset_id: string; active_dataset: DatasetRecord | null; datasets: DatasetRecord[] }>({
+  const [vaultData, setVaultData] = useState<{ active_dataset_id: string; active_dataset: DatasetRecord | null; datasets: DatasetRecord[]; error?: string }>({
     active_dataset_id: '',
     active_dataset: null,
     datasets: []
@@ -54,9 +63,13 @@ export default function PipelineExplorer() {
     fetchDatasetsVault().then(res => setVaultData(res));
   };
 
+  // Set when the stage outputs on disk were produced from a different dataset than the active one
+  const [staleResults, setStaleResults] = useState<{ fromDataset?: string | null } | null>(null);
+
   const loadStages = () => {
     fetchPipeline().then(res => {
       setStages(res.data);
+      setStaleResults(res.resultsStale ? { fromDataset: res.resultsDatasetName } : null);
       if (res.data.length > 0 && !selectedStage) {
         setSelectedStage(res.data[0]);
       }
@@ -83,7 +96,9 @@ export default function PipelineExplorer() {
     setUploadMessage(null);
     try {
       const res = await uploadDatasetFile(file);
-      setUploadMessage(`Saved "${file.name}" to Dataset Vault and activated! Fingerprint: ${res.md5_hash}`);
+      setUploadMessage(`${res.message} Fingerprint: ${res.dataset?.md5_hash || 'N/A'}`);
+      // The backend runs the pipeline on the uploaded dataset as part of the upload
+      if (res.pipeline_run) setPipelineRunResult(res.pipeline_run);
       loadDataInfo();
       loadStages();
       window.dispatchEvent(new Event('dataset-changed'));
@@ -158,6 +173,26 @@ export default function PipelineExplorer() {
 
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
 
+  // Preview of any stored vault dataset (not just the active one)
+  const [vaultPreview, setVaultPreview] = useState<{ id: string; name: string; columns: string[]; rows: string[][]; error?: string } | null>(null);
+  const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
+
+  const handlePreviewDataset = async (ds: DatasetRecord) => {
+    if (vaultPreview?.id === ds.id) {
+      setVaultPreview(null);
+      return;
+    }
+    setPreviewLoadingId(ds.id);
+    try {
+      const res = await fetchDatasetPreview(ds.id);
+      setVaultPreview({ id: ds.id, name: ds.name, columns: res.columns, rows: res.preview_rows });
+    } catch (err: any) {
+      setVaultPreview({ id: ds.id, name: ds.name, columns: [], rows: [], error: err.message || 'Failed to load preview' });
+    } finally {
+      setPreviewLoadingId(null);
+    }
+  };
+
   const handleDownload = async (path: string, filename?: string) => {
     setDownloadingPath(path);
     try {
@@ -192,419 +227,649 @@ export default function PipelineExplorer() {
     return [];
   };
 
-  const paramValue = (param: string) =>
-    param === 'preprocess.quality_threshold' ? '6' :
-    param === 'split.seed' ? '42' :
-    param === 'split.test_size' ? '0.2' :
-    param === 'featurize.scaler' ? '"standard"' :
-    param === 'train.max_depth' ? '8' :
-    param === 'train.n_estimators' ? '100' : 'Bound';
-
-  const kb = (bytes?: number | null) => (bytes ? `${(bytes / 1024).toFixed(1)} KB` : '');
-
   return (
-    <Page
-      title="Pipeline"
-      hint={
-        <>
-          Active dataset
-          <span className="text-text font-medium truncate">{vaultData.active_dataset?.name || 'Wine Quality'}</span>
-        </>
-      }
-      actions={
-        <>
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            accept=".csv"
-            className="hidden"
-          />
-          <Btn onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
-            <UploadCloud className="w-3.5 h-3.5 mr-1.5 text-muted" />
-            Upload CSV
-          </Btn>
-          <Btn onClick={handleLoadBaseline} disabled={isUploading}>
-            <Check className="w-3.5 h-3.5 mr-1.5 text-muted" />
-            Restore baseline
-          </Btn>
-          <Btn variant="primary" onClick={handleRunFullPipeline} disabled={isRunningPipeline}>
+    <div className="space-y-6 max-w-7xl mx-auto pb-10">
+      {/* Header */}
+      <div className="border-b border-border pb-5 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-text tracking-tight">Pipeline Explorer & Execution</h1>
+          <p className="text-sm text-muted mt-1">
+            Input dataset management, DVC stages visualizer, artifact hashes, and end-to-end execution.
+          </p>
+        </div>
+
+        <div className="flex items-center space-x-3">
+          <button 
+            onClick={handleRunFullPipeline}
+            disabled={isRunningPipeline}
+            className="inline-flex items-center px-4 py-2 bg-primary text-white text-xs font-semibold rounded hover:bg-primary/90 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
+          >
             {isRunningPipeline ? (
               <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />
             ) : (
               <Play className="w-3.5 h-3.5 mr-1.5 fill-white" />
             )}
-            {isRunningPipeline ? 'Running 4 stages…' : 'Run full pipeline'}
-          </Btn>
-        </>
-      }
-    >
-      {uploadMessage && (
-        <div className="px-4 py-2 border-b border-border bg-primary/5 text-xs text-text flex items-center justify-between gap-4">
-          <span className="break-all">{uploadMessage}</span>
-          <button onClick={() => setUploadMessage(null)} className="text-muted hover:text-text cursor-pointer shrink-0" aria-label="Dismiss">
-            <X className="w-3.5 h-3.5" />
+            {isRunningPipeline ? 'Running 4 Stages...' : 'Run Full ML Pipeline'}
+          </button>
+        </div>
+      </div>
+
+      {/* SECTION 1: Dataset Vault & Multi-Dataset Library */}
+      <div className="bg-surface rounded-lg border border-border shadow-xs p-6 space-y-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between pb-4 border-b border-border gap-4">
+          <div>
+            <div className="flex items-center space-x-2">
+              <span className="text-[10px] font-mono uppercase bg-primary/10 text-primary px-2 py-0.5 rounded font-bold">
+                Dataset Vault & Library
+              </span>
+              <span className="text-xs text-muted">
+                ({vaultData.datasets.length} Datasets Preserved)
+              </span>
+            </div>
+            <h2 className="text-base font-bold text-text mt-1 flex items-center">
+              <Database className="w-4 h-4 mr-2 text-primary" />
+              Active Dataset: <span className="text-primary ml-1.5 font-semibold">{vaultData.active_dataset?.name || 'Wine Quality'}</span>
+            </h2>
+            <p className="text-xs text-muted mt-0.5">
+              Upload and switch between any datasets. The pipeline dynamically processes and preserves every dataset without overwriting.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={handleFileUpload} 
+              accept=".csv" 
+              className="hidden" 
+            />
+            <button 
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading}
+              className="px-3 py-1.5 bg-primary text-white hover:bg-primary/90 rounded text-xs font-semibold flex items-center shadow-xs cursor-pointer disabled:opacity-50"
+            >
+              <UploadCloud className="w-3.5 h-3.5 mr-1.5" />
+              {isUploading ? 'Uploading & running pipeline...' : 'Upload New CSV to Vault'}
+            </button>
+
+            <button 
+              onClick={handleLoadBaseline}
+              disabled={isUploading}
+              className="px-3 py-1.5 bg-background border border-border hover:border-primary/50 text-text rounded text-xs font-semibold flex items-center shadow-xs cursor-pointer disabled:opacity-50"
+            >
+              <Check className="w-3.5 h-3.5 mr-1.5 text-primary" />
+              Restore Certified Baseline (Wine)
+            </button>
+          </div>
+        </div>
+
+        {uploadMessage && (
+          <div className="p-3 bg-primary/5 border border-primary/20 rounded text-xs text-primary flex items-center justify-between">
+            <span>{uploadMessage}</span>
+            <button onClick={() => setUploadMessage(null)} className="text-muted hover:text-text cursor-pointer">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Multi-Dataset Vault Cards Grid */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-xs font-bold text-text uppercase tracking-wider flex items-center">
+              <Layers className="w-3.5 h-3.5 mr-1.5 text-primary" />
+              Stored Datasets in Vault
+            </h3>
+            <span className="text-[11px] text-muted">
+              Click "Activate" to stage any dataset into the active execution pipeline
+            </span>
+          </div>
+
+          {vaultData.error && (
+            <div className="mb-3 p-3 bg-error/10 border border-error/20 rounded text-xs text-error">
+              {vaultData.error}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {vaultData.datasets.map(ds => {
+              const isActive = ds.id === vaultData.active_dataset_id;
+              return (
+                <div 
+                  key={ds.id}
+                  className={`p-4 rounded-lg border transition-all flex flex-col justify-between ${
+                    isActive 
+                      ? 'bg-primary/5 border-primary shadow-xs ring-1 ring-primary/20' 
+                      : 'bg-background hover:bg-background/80 border-border'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center space-x-1.5">
+                          <h4 className="text-xs font-bold text-text truncate" title={ds.name}>
+                            {ds.name}
+                          </h4>
+                          {ds.is_baseline && (
+                            <span className="text-[9px] bg-primary/10 text-primary px-1.5 py-0.2 rounded font-semibold shrink-0">
+                              Baseline
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] font-mono text-muted truncate mt-0.5" title={ds.filename}>
+                          {ds.filename}
+                        </p>
+                      </div>
+
+                      {isActive ? (
+                        <span className="text-[10px] bg-primary text-white px-2 py-0.5 rounded font-semibold shrink-0 flex items-center">
+                          <CheckCircle2 className="w-3 h-3 mr-1" /> Active
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => handleActivateDataset(ds.id)}
+                          disabled={isActivatingId === ds.id}
+                          className="text-[10px] bg-background hover:bg-primary/10 border border-border hover:border-primary/40 text-primary px-2 py-0.5 rounded font-semibold shrink-0 cursor-pointer transition-colors"
+                        >
+                          {isActivatingId === ds.id ? 'Switching...' : 'Activate'}
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 mt-3 text-[11px]">
+                      <div className="bg-surface/80 p-2 rounded border border-border/60">
+                        <span className="text-[10px] text-muted block">Rows</span>
+                        <span className="font-bold text-text">{ds.rows?.toLocaleString() || '--'}</span>
+                      </div>
+                      <div className="bg-surface/80 p-2 rounded border border-border/60">
+                        <span className="text-[10px] text-muted block">Features</span>
+                        <span className="font-bold text-text">{ds.columns?.length || '--'} cols</span>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 text-[10px] space-y-0.5">
+                      <div className="flex items-center justify-between text-muted">
+                        <span>Target:</span>
+                        <span className="font-mono text-text font-semibold truncate max-w-[120px]" title={ds.target_column}>
+                          {ds.target_column || 'auto-detect'}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-muted">
+                        <span>Fingerprint:</span>
+                        <span className="font-mono text-muted truncate max-w-[120px]" title={ds.md5_hash}>
+                          {ds.md5_hash?.slice(0, 10)}...
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 pt-2.5 border-t border-border/60 flex items-center justify-between text-[11px]">
+                    <div>
+                      {ds.last_run_metrics ? (
+                        <span className="text-text font-mono font-medium">
+                          Acc: <span className="font-bold text-primary">{ds.last_run_metrics.accuracy.toFixed(4)}</span>
+                        </span>
+                      ) : (
+                        <span className="text-muted italic text-[10px]">Awaiting execution</span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => handlePreviewDataset(ds)}
+                      disabled={previewLoadingId === ds.id}
+                      className="text-[10px] text-primary hover:underline flex items-center cursor-pointer disabled:opacity-50"
+                    >
+                      <FileSpreadsheet className="w-2.5 h-2.5 mr-0.5" />
+                      {previewLoadingId === ds.id ? 'Loading...' : vaultPreview?.id === ds.id ? 'Hide preview' : 'Preview'}
+                    </button>
+                    {isActive ? (
+                      <span className="text-[10px] text-primary font-semibold flex items-center">
+                        Staged for pipeline
+                      </span>
+                    ) : (
+                      <button 
+                        onClick={() => handleActivateDataset(ds.id)}
+                        className="text-[10px] text-muted hover:text-primary flex items-center cursor-pointer"
+                      >
+                        Switch to this <ArrowRight className="w-2.5 h-2.5 ml-0.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Preview of the selected vault dataset */}
+          {vaultPreview && (
+            <div className="mt-3 p-3 bg-background rounded border border-border text-[11px]">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-text flex items-center">
+                  <FileSpreadsheet className="w-3.5 h-3.5 mr-1.5 text-primary" />
+                  Preview: <span className="text-primary ml-1">{vaultPreview.name}</span>
+                  {!vaultPreview.error && (
+                    <span className="text-muted font-normal ml-2">first {vaultPreview.rows.length} rows</span>
+                  )}
+                </span>
+                <button onClick={() => setVaultPreview(null)} className="text-muted hover:text-text cursor-pointer">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {vaultPreview.error ? (
+                <p className="text-error">{vaultPreview.error}</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-border text-muted">
+                        {vaultPreview.columns.map((col, cIdx) => (
+                          <th key={cIdx} className="p-1.5 font-mono whitespace-nowrap">{col}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/60">
+                      {vaultPreview.rows.map((row, rIdx) => (
+                        <tr key={rIdx}>
+                          {row.map((val, cIdx) => (
+                            <td key={cIdx} className="p-1.5 font-mono text-text whitespace-nowrap">{val}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Active Dataset Inspection Strip */}
+        {datasetStatus && (
+          <div className="pt-2 border-t border-border">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-text flex items-center">
+                <FileSpreadsheet className="w-3.5 h-3.5 mr-1.5 text-primary" />
+                Active Staged File (<code className="font-mono text-primary">{datasetStatus.filename || 'wine.csv'}</code>)
+              </span>
+              {datasetStatus.columns && datasetStatus.columns.length > 0 && (
+                <button 
+                  onClick={() => setShowDataPreview(!showDataPreview)}
+                  className="text-xs text-primary hover:underline cursor-pointer"
+                >
+                  {showDataPreview ? 'Hide preview' : 'Inspect preview rows'}
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="p-2.5 bg-background rounded border border-border">
+                <span className="text-[10px] text-muted block">Status on Disk</span>
+                <span className="text-xs font-bold text-text mt-0.5 flex items-center">
+                  <CheckCircle2 className="w-3 h-3 mr-1 text-primary" /> Present & Ready
+                </span>
+              </div>
+
+              <div className="p-2.5 bg-background rounded border border-border">
+                <span className="text-[10px] text-muted block">Live MD5 Hash</span>
+                <span className="text-xs font-mono font-bold text-text mt-0.5 block truncate" title={datasetStatus.current_md5}>
+                  {datasetStatus.current_md5 ? `${datasetStatus.current_md5.slice(0, 10)}...` : 'None'}
+                </span>
+              </div>
+
+              <div className="p-2.5 bg-background rounded border border-border">
+                <span className="text-[10px] text-muted block">Staged Rows & Size</span>
+                <span className="text-xs font-bold text-text mt-0.5 block">
+                  {datasetStatus.total_rows ? `${datasetStatus.total_rows.toLocaleString()} rows` : '--'}
+                </span>
+              </div>
+
+              <div className="p-2.5 bg-background rounded border border-border">
+                <span className="text-[10px] text-muted block">Input Features</span>
+                <span className="text-xs font-bold text-text mt-0.5 block">
+                  {datasetStatus.columns ? `${datasetStatus.columns.length} columns` : '--'}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Data Preview Rows */}
+        {showDataPreview && datasetStatus?.preview_rows && (
+          <div className="p-3 bg-background rounded border border-border overflow-x-auto text-[11px]">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-border text-muted">
+                  {datasetStatus.columns?.map(col => (
+                    <th key={col} className="p-1.5 font-mono">{col.replace(/"/g, '')}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/60">
+                {datasetStatus.preview_rows.map((row, rIdx) => (
+                  <tr key={rIdx}>
+                    {row.map((val, cIdx) => (
+                      <td key={cIdx} className="p-1.5 font-mono text-text">{val}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {staleResults && !isRunningPipeline && (
+        <div className="p-4 bg-warning/10 border border-warning/30 rounded-lg text-xs text-text flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start space-x-2">
+            <AlertCircle className="w-4 h-4 text-warning mt-0.5 shrink-0" />
+            <span>
+              The pipeline has not been run on <span className="font-semibold">{vaultData.active_dataset?.name || 'the active dataset'}</span> yet.
+              {staleResults.fromDataset
+                ? ` The stage outputs below were produced from "${staleResults.fromDataset}".`
+                : ' The stage outputs below were produced from a different dataset.'}
+            </span>
+          </div>
+          <button
+            onClick={handleRunFullPipeline}
+            className="px-3 py-1.5 bg-primary text-white rounded text-xs font-semibold hover:bg-primary/90 cursor-pointer shrink-0"
+          >
+            Run pipeline on this dataset
           </button>
         </div>
       )}
 
-      {/* SECTION 1: Dataset vault */}
-      <SectionLabel count={vaultData.datasets.length} aside="Activate a dataset to stage it into the pipeline">
-        Dataset vault
-      </SectionLabel>
-      <div className="overflow-x-auto">
-        <table className="sheet">
-          <thead>
-            <tr>
-              <th className="rn"></th>
-              <Th>name</Th>
-              <Th>file</Th>
-              <Th t="#" className="num">rows</Th>
-              <Th t="#" className="num">features</Th>
-              <Th>target</Th>
-              <Th>fingerprint</Th>
-              <Th t="#" className="num">accuracy</Th>
-              <Th>state</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {vaultData.datasets.length === 0 && (
-              <tr>
-                <td className="rn"></td>
-                <td colSpan={8} className="text-muted">No datasets in the vault yet. Upload a CSV to add one.</td>
-              </tr>
-            )}
-            {vaultData.datasets.map((ds, idx) => {
-              const isActive = ds.id === vaultData.active_dataset_id;
-              return (
-                <tr key={ds.id} className={isActive ? 'is-selected' : undefined}>
-                  <td className="rn">{idx + 1}</td>
-                  <td className="font-medium">
-                    <span title={ds.name}>{ds.name}</span>
-                    {ds.is_baseline && <span className="ml-2"><Tag tone="grey">baseline</Tag></span>}
-                  </td>
-                  <td className="text-muted" title={ds.filename}>{ds.filename}</td>
-                  <td className="num">{ds.rows?.toLocaleString() || '--'}</td>
-                  <td className="num">{ds.columns?.length || '--'}</td>
-                  <td>{ds.target_column || <span className="text-muted">auto-detect</span>}</td>
-                  <td className="font-mono text-xs text-muted" title={ds.md5_hash}>{ds.md5_hash?.slice(0, 10)}…</td>
-                  <td className="num">
-                    {ds.last_run_metrics ? ds.last_run_metrics.accuracy.toFixed(4) : <span className="text-muted">not run</span>}
-                  </td>
-                  <td>
-                    {isActive ? (
-                      <Tag tone="green">active</Tag>
-                    ) : (
-                      <button
-                        onClick={() => handleActivateDataset(ds.id)}
-                        disabled={isActivatingId === ds.id}
-                        className="text-xs text-primary hover:underline cursor-pointer disabled:opacity-50"
-                      >
-                        {isActivatingId === ds.id ? 'Switching…' : 'Activate'}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Active staged file */}
-      {datasetStatus && (
-        <div className="min-h-9 px-4 py-1.5 border-b border-border flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-muted">
-          <span className="flex items-center text-text">
-            <FileSpreadsheet className="w-3.5 h-3.5 mr-1.5 text-muted" />
-            <span className="font-mono">data/raw/wine.csv</span>
-          </span>
-          <span className="flex items-center text-accent">
-            <CheckCircle2 className="w-3 h-3 mr-1" /> present
-          </span>
-          <span title={datasetStatus.current_md5}>
-            md5 <span className="font-mono text-text">{datasetStatus.current_md5 ? `${datasetStatus.current_md5.slice(0, 10)}…` : 'none'}</span>
-          </span>
-          <span>
-            {datasetStatus.total_rows ? `${datasetStatus.total_rows.toLocaleString()} rows` : '-- rows'}
-            {' × '}
-            {datasetStatus.columns ? `${datasetStatus.columns.length} columns` : '-- columns'}
-          </span>
-          {datasetStatus.columns && datasetStatus.columns.length > 0 && (
-            <button
-              onClick={() => setShowDataPreview(!showDataPreview)}
-              className="text-primary hover:underline cursor-pointer ml-auto"
-            >
-              {showDataPreview ? 'Hide preview' : 'Preview rows'}
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Data preview rows */}
-      {showDataPreview && datasetStatus?.preview_rows && (
-        <div className="overflow-x-auto">
-          <table className="sheet">
-            <thead>
-              <tr>
-                <th className="rn"></th>
-                {datasetStatus.columns?.map(col => (
-                  <Th key={col} t="#">{col.replace(/"/g, '')}</Th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {datasetStatus.preview_rows.map((row, rIdx) => (
-                <tr key={rIdx}>
-                  <td className="rn">{rIdx + 1}</td>
-                  {row.map((val, cIdx) => (
-                    <td key={cIdx} className="num">{val}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* SECTION 2: Pipeline run output (if triggered) */}
+      {/* SECTION 2: Real Pipeline Execution Output Log (if triggered) */}
       {pipelineRunResult && (
-        <>
-          <SectionLabel
-            aside={
-              <Tag tone={pipelineRunResult.status === 'success' ? 'green' : 'red'}>
-                {pipelineRunResult.status === 'success' ? 'all stages succeeded' : 'execution failed'}
-              </Tag>
-            }
-          >
-            Last run output
-          </SectionLabel>
+        <div className="bg-surface rounded-lg border border-border shadow-xs p-6 space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-border">
+            <h2 className="text-sm font-bold text-text flex items-center">
+              <Terminal className="w-4 h-4 mr-2 text-primary" />
+              Pipeline Execution Output & Generated Metrics
+            </h2>
+            <span className={`text-xs px-2 py-0.5 rounded font-semibold ${
+              pipelineRunResult.status === 'success' ? 'bg-primary/10 text-primary' : 'bg-error/10 text-error'
+            }`}>
+              {pipelineRunResult.status === 'success' ? '✓ ALL STAGES SUCCEEDED' : '✗ EXECUTION FAILED'}
+            </span>
+          </div>
 
           {pipelineRunResult.metrics && (
-            <div className="grid grid-cols-2 lg:grid-cols-4">
-              <Stat label="Resulting accuracy" value={pipelineRunResult.metrics.accuracy?.toFixed(4) || '--'} />
-              <Stat label="Resulting ROC-AUC" value={pipelineRunResult.metrics.roc_auc?.toFixed(4) || '--'} />
+            <div className="p-4 bg-background rounded border border-border flex items-center space-x-6">
+              <Activity className="w-5 h-5 text-primary" />
+              <div>
+                <span className="text-[11px] text-muted block uppercase">Resulting Accuracy</span>
+                <span className="text-base font-bold font-mono text-text">
+                  {pipelineRunResult.metrics.accuracy?.toFixed(4) || '--'}
+                </span>
+              </div>
+              <div className="border-l border-border pl-6">
+                <span className="text-[11px] text-muted block uppercase">Resulting ROC-AUC</span>
+                <span className="text-base font-bold font-mono text-text">
+                  {pipelineRunResult.metrics.roc_auc?.toFixed(4) || '--'}
+                </span>
+              </div>
             </div>
-          )}
-
-          {pipelineRunResult.message && !pipelineRunResult.logs && (
-            <div className="px-4 py-2 border-b border-border text-xs text-error">{pipelineRunResult.message}</div>
           )}
 
           {pipelineRunResult.logs && (
-            <div className="overflow-x-auto">
-              <table className="sheet">
-                <thead>
-                  <tr>
-                    <th className="rn"></th>
-                    <Th>stage</Th>
-                    <Th t="#" className="num">exit code</Th>
-                    <Th>output</Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pipelineRunResult.logs.map((log: any, idx: number) => (
-                    <tr key={log.stage}>
-                      <td className="rn">{idx + 1}</td>
-                      <td className="font-medium">{log.stage}</td>
-                      <td className="num">{log.returncode}</td>
-                      <td className="wrap font-mono text-xs">
-                        {log.stdout && <p className="text-text">{log.stdout}</p>}
-                        {log.stderr && <p className="text-error">{log.stderr}</p>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-2 text-xs font-mono">
+              {pipelineRunResult.logs.map((log: any) => (
+                <div key={log.stage} className="p-2.5 bg-background rounded border border-border">
+                  <div className="flex items-center justify-between text-muted text-[11px] mb-1">
+                    <span className="font-bold text-primary uppercase">Stage: {log.stage}</span>
+                    <span>exit code {log.returncode}</span>
+                  </div>
+                  {log.stdout && <p className="text-text">{log.stdout}</p>}
+                  {log.stderr && <p className="text-error">{log.stderr}</p>}
+                </div>
+              ))}
             </div>
           )}
-        </>
+        </div>
       )}
 
-      {/* SECTION 3: Confirmation modal for stage reproduce */}
+      {/* SECTION 3: Confirmation Modal for Stage Reproduce */}
       {showConfirmModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-          <div className="bg-surface border border-border rounded-xl max-w-md w-full shadow-lg">
-            <div className="h-11 px-4 flex items-center justify-between border-b border-border">
-              <h2 className="text-sm font-semibold text-text flex items-center">
-                <AlertCircle className="w-4 h-4 text-warning mr-2" />
-                Confirm pipeline execution
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+          <div className="bg-surface border border-border rounded-lg max-w-md w-full p-6 shadow-md">
+            <div className="flex items-center justify-between pb-3 border-b border-border">
+              <h2 className="text-base font-bold text-text flex items-center">
+                <AlertCircle className="w-5 h-5 text-warning mr-2" />
+                Confirm Pipeline Execution
               </h2>
-              <button
+              <button 
                 onClick={() => { setShowConfirmModal(false); setExecResult(null); }}
                 className="text-muted hover:text-text cursor-pointer"
-                aria-label="Close"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="p-4 text-xs text-muted space-y-3">
+            <div className="py-4 text-xs text-muted space-y-3">
               <p>
-                This runs the project pipeline through DVC: it parses dependencies, runs the stage scripts, and verifies the resulting artifact hashes.
+                You are about to execute project pipeline code via DVC. This process parses dependencies, runs stage Python scripts, and verifies resulting artifact hashes.
               </p>
-              <div className="px-3 py-2 bg-background rounded-md border border-border font-mono text-text">
-                dvc repro {selectedStage ? selectedStage.id : ''}
+              <div className="p-3 bg-background rounded border border-border">
+                <span className="font-semibold text-text block mb-1">Execution Target:</span>
+                <code className="text-[11px] font-mono text-primary">
+                  dvc repro {selectedStage ? selectedStage.id : ''}
+                </code>
               </div>
 
               {execResult && (
-                <div className={execResult.success ? 'text-accent' : 'text-error'}>
-                  <p className="font-semibold">{execResult.success ? 'Reproduction verified' : 'Execution failed'}</p>
+                <div className={`p-3 rounded border text-xs ${
+                  execResult.success ? 'bg-primary/10 border-primary/20 text-primary' : 'bg-error/10 border-error/20 text-error'
+                }`}>
+                  <p className="font-semibold">{execResult.success ? '✓ Reproduction Verified' : '✗ Execution Failed'}</p>
                   <p className="mt-0.5">{execResult.message}</p>
                 </div>
               )}
             </div>
 
-            <div className="px-4 py-3 flex items-center justify-end gap-2 border-t border-border">
-              <Btn onClick={() => { setShowConfirmModal(false); setExecResult(null); }}>Close</Btn>
-              <Btn variant="primary" onClick={handleStartReproduction} disabled={isExecuting}>
+            <div className="flex items-center justify-end space-x-3 pt-3 border-t border-border">
+              <button 
+                onClick={() => { setShowConfirmModal(false); setExecResult(null); }}
+                className="px-3 py-1.5 border border-border rounded text-xs font-medium text-text hover:bg-border/30 cursor-pointer"
+              >
+                Close
+              </button>
+              <button 
+                onClick={handleStartReproduction}
+                disabled={isExecuting}
+                className="px-4 py-1.5 bg-primary text-white rounded text-xs font-semibold hover:bg-primary/90 flex items-center cursor-pointer disabled:opacity-50"
+              >
                 {isExecuting ? <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Play className="w-3.5 h-3.5 mr-1.5" />}
-                {isExecuting ? 'Running DVC…' : 'Execute now'}
-              </Btn>
+                {isExecuting ? 'Running DVC...' : 'Execute Now'}
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* SECTION 4: Stage list + stage details */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)]">
-        {/* Left: stages as a step list */}
-        <div className="bg-background border-b lg:border-b-0 lg:border-r border-border">
-          <div className="h-9 px-4 flex items-center justify-between border-b border-border">
-            <span className="text-[11px] font-semibold text-muted tracking-widest uppercase">Stages</span>
-            <span className="text-[11px] font-medium text-muted bg-border/70 rounded px-1.5 py-px">{stages.length}</span>
-          </div>
+      {/* SECTION 4: Pipeline visualizer + Stage details */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Left Column: Visual Stages Flow */}
+        <div className="lg:col-span-5 space-y-3">
+          <div className="bg-surface p-4 rounded-lg border border-border shadow-xs">
+            <h2 className="text-xs font-bold text-muted uppercase tracking-wider mb-3">
+              Stages Defined in dvc.yaml
+            </h2>
 
-          <div className="p-2 space-y-0.5">
-            {stages.map((stage, idx) => {
-              const isSelected = selectedStage?.id === stage.id;
-              const done = stage.status === 'Completed';
-              return (
-                <div
-                  key={stage.id}
-                  onClick={() => setSelectedStage(stage)}
-                  className={`rounded-lg border px-2.5 py-2 cursor-pointer transition-colors ${
-                    isSelected ? 'bg-surface border-border shadow-xs' : 'border-transparent hover:bg-border/40'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    {done ? (
-                      <CheckCircle2 className="w-4 h-4 text-primary shrink-0" />
-                    ) : (
-                      <AlertCircle className="w-4 h-4 text-warning shrink-0" />
+            <div className="space-y-3">
+              {stages.map((stage, idx) => {
+                const isSelected = selectedStage?.id === stage.id;
+                return (
+                  <div key={stage.id} className="relative">
+                    <div 
+                      onClick={() => setSelectedStage(stage)}
+                      className={`p-4 rounded-lg border transition-all cursor-pointer ${
+                        isSelected 
+                          ? 'border-primary bg-primary/5 ring-1 ring-primary/20' 
+                          : 'border-border bg-surface hover:border-primary/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-3">
+                          <div className={`w-7 h-7 rounded flex items-center justify-center text-xs font-bold font-mono ${
+                            isSelected ? 'bg-primary text-white' : 'bg-background border border-border text-muted'
+                          }`}>
+                            0{idx + 1}
+                          </div>
+                          <div>
+                            <h3 className="text-sm font-bold text-text flex items-center">
+                              {stage.name}
+                            </h3>
+                            <span className="text-[11px] font-mono text-muted flex items-center mt-0.5">
+                              <FileCode className="w-3 h-3 mr-1" />
+                              {stage.script || stage.cmd}
+                            </span>
+                          </div>
+                        </div>
+
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-primary/10 text-primary uppercase">
+                          {stage.status}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 pt-2 border-t border-border/50 flex items-center justify-between text-[11px] text-muted">
+                        <span>{stage.dependencies.length} dependencies</span>
+                        <span>{stage.outputs.length} outputs</span>
+                        <span>{stage.parameters.length} params</span>
+                      </div>
+                    </div>
+
+                    {idx < stages.length - 1 && (
+                      <div className="flex justify-center py-1">
+                        <div className="w-0.5 h-3 bg-border"></div>
+                      </div>
                     )}
-                    <span className="text-xs text-muted w-3">{idx + 1}</span>
-                    <span className="text-sm text-text truncate">{stage.name}</span>
                   </div>
-
-                  {isSelected && (
-                    <dl className="mt-2 pl-[26px]">
-                      <div className="text-[10px] font-semibold text-muted tracking-widest uppercase mb-0.5">Declared</div>
-                      <KV k="script">{stage.script || stage.cmd}</KV>
-                      <KV k="dependencies">{stage.dependencies.length}</KV>
-                      <KV k="outputs">{stage.outputs.length}</KV>
-                      <KV k="params">{stage.parameters.length}</KV>
-                      <KV k="status"><Tag tone={statusTone(stage.status)}>{stage.status}</Tag></KV>
-                    </dl>
-                  )}
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         </div>
 
-        {/* Right: stage inspection */}
-        <div className="min-w-0">
+        {/* Right Column: Stage Inspection Details */}
+        <div className="lg:col-span-7">
           {selectedStage ? (
-            <>
-              <div className="min-h-11 px-4 py-1.5 border-b border-border flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-                <div className="flex items-baseline gap-3 min-w-0">
-                  <h2 className="text-sm font-semibold text-text">{selectedStage.name}</h2>
-                  <span className="text-xs font-mono text-muted truncate">{selectedStage.cmd}</span>
+            <div className="bg-surface p-6 rounded-lg border border-border shadow-xs space-y-6">
+              {/* Stage Header */}
+              <div className="flex items-start justify-between border-b border-border pb-4">
+                <div>
+                  <span className="text-[10px] font-mono text-primary font-bold uppercase tracking-wider bg-primary/10 px-2 py-0.5 rounded">
+                    Selected DVC Stage
+                  </span>
+                  <h2 className="text-xl font-bold text-text mt-1.5 flex items-center">
+                    {selectedStage.name}
+                  </h2>
+                  <p className="text-xs font-mono text-muted mt-1">
+                    Command: <span className="text-text font-semibold">{selectedStage.cmd}</span>
+                  </p>
                 </div>
-                <Tag tone={statusTone(selectedStage.status)}>{selectedStage.status}</Tag>
+
+                <div className="text-right">
+                  <span className="text-[11px] text-muted block">Stage Status</span>
+                  <span className="inline-flex items-center text-xs font-bold text-primary bg-primary/10 px-2.5 py-1 rounded mt-0.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
+                    {selectedStage.status}
+                  </span>
+                </div>
               </div>
 
-              {/* Stage parameters */}
-              <SectionLabel count={selectedStage.parameters.length} aside="params.yaml">Parameters</SectionLabel>
-              {selectedStage.parameters.length > 0 ? (
-                <table className="sheet">
-                  <thead>
-                    <tr>
-                      <th className="rn"></th>
-                      <Th>parameter</Th>
-                      <Th t="#">value</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedStage.parameters.map((param, idx) => (
-                      <tr key={param}>
-                        <td className="rn">{idx + 1}</td>
-                        <td className="font-mono text-xs">{param}</td>
-                        <td className="font-mono text-xs">{paramValue(param)}</td>
-                      </tr>
+              {/* Stage Parameters */}
+              <div>
+                <h3 className="text-xs font-bold text-muted uppercase tracking-wider mb-2 flex items-center">
+                  <Sliders className="w-3.5 h-3.5 mr-1 text-primary" />
+                  Hyperparameters & Configuration (params.yaml)
+                </h3>
+                {selectedStage.parameters.length > 0 ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {selectedStage.parameters.map(param => (
+                      <div key={param} className="p-2.5 bg-background rounded border border-border flex items-center justify-between">
+                        <span className="text-xs font-mono text-text">{param}</span>
+                        <span className="text-[11px] font-mono font-semibold text-primary">
+                          {param === 'preprocess.quality_threshold' ? '6' :
+                           param === 'split.seed' ? '42' :
+                           param === 'split.test_size' ? '0.2' :
+                           param === 'featurize.scaler' ? '"standard"' :
+                           param === 'train.max_depth' ? '8' :
+                           param === 'train.n_estimators' ? '100' : 'Bound'}
+                        </span>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
-              ) : (
-                <p className="px-4 py-2.5 border-b border-border text-xs text-muted">
-                  No external parameters declared in dvc.yaml for this stage.
-                </p>
-              )}
-
-              {/* Dependencies & recorded hashes */}
-              <SectionLabel count={selectedStage.dependencies.length} aside="dvc.lock">Dependencies</SectionLabel>
-              <div className="overflow-x-auto">
-                <table className="sheet">
-                  <thead>
-                    <tr>
-                      <th className="rn"></th>
-                      <Th>path</Th>
-                      <Th>md5</Th>
-                      <Th t="#" className="num">size</Th>
-                      <Th>state</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedStage.dependencies.map((dep, idx) => (
-                      <tr key={dep.path}>
-                        <td className="rn">{idx + 1}</td>
-                        <td className="font-mono text-xs">{dep.path}</td>
-                        <td className="font-mono text-xs text-muted">{dep.locked_md5 || 'derived'}</td>
-                        <td className="num text-muted">{kb(dep.size_bytes)}</td>
-                        <td><Tag tone={dep.exists_on_disk ? 'green' : 'grey'}>{dep.exists_on_disk ? 'on disk' : 'dvc tracked'}</Tag></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted italic">No external parameters declared in dvc.yaml for this stage.</p>
+                )}
               </div>
 
-              {/* Outputs & downloads */}
-              <SectionLabel count={selectedStage.outputs.length} aside="Generated files can be downloaded">Outputs</SectionLabel>
-              <div className="overflow-x-auto">
-                <table className="sheet">
-                  <thead>
-                    <tr>
-                      <th className="rn"></th>
-                      <Th>path</Th>
-                      <Th>md5</Th>
-                      <Th t="#" className="num">size</Th>
-                      <Th>download</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedStage.outputs.map((out, idx) => {
-                      const downloadableFiles = getDownloadableFilesForOutput(out, selectedStage.id);
-                      return (
-                        <tr key={out.path}>
-                          <td className="rn">{idx + 1}</td>
-                          <td className="font-mono text-xs">
-                            {out.path}
-                            {out.is_dir && <span className="ml-2 font-sans"><Tag tone="grey">directory</Tag></span>}
-                          </td>
-                          <td className="font-mono text-xs text-muted">{out.locked_md5 || 'tracked in dvc.lock'}</td>
-                          <td className="num text-muted">{kb(out.size_bytes)}</td>
-                          <td>
-                            <div className="flex items-center gap-1.5">
+              {/* Dependencies & Recorded Hashes */}
+              <div>
+                <h3 className="text-xs font-bold text-muted uppercase tracking-wider mb-2 flex items-center">
+                  <Database className="w-3.5 h-3.5 mr-1 text-primary" />
+                  Dependencies & Locked Hashes (dvc.lock)
+                </h3>
+                <div className="space-y-2">
+                  {selectedStage.dependencies.map(dep => (
+                    <div key={dep.path} className="p-3 bg-background rounded border border-border">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-mono font-semibold text-text">{dep.display_path || dep.path}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">
+                          {dep.exists_on_disk ? 'Present on disk' : 'DVC tracked'}
+                        </span>
+                      </div>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-4 text-[11px] text-muted font-mono">
+                        <span>MD5: <code className="text-text">{dep.locked_md5 || 'Derived'}</code></span>
+                        {dep.size_bytes && <span>Size: {(dep.size_bytes / 1024).toFixed(1)} KB</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Outputs & Download Options */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-bold text-muted uppercase tracking-wider flex items-center">
+                    <FileCheck className="w-3.5 h-3.5 mr-1 text-primary" />
+                    Output Artifacts & Generated CSVs
+                  </h3>
+                  <span className="text-[11px] text-muted">
+                    Modified datasets available for download
+                  </span>
+                </div>
+
+                <div className="space-y-3">
+                  {selectedStage.outputs.map(out => {
+                    const downloadableFiles = getDownloadableFilesForOutput(out, selectedStage.id);
+                    return (
+                      <div key={out.path} className="p-3.5 bg-background rounded-lg border border-border space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <span className="text-xs font-mono font-bold text-text">{out.path}</span>
+                            {out.is_dir && (
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-surface border border-border text-muted font-medium">
+                                Directory
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-primary/10 text-primary font-semibold">
+                            Generated Output
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-x-4 text-[11px] text-muted font-mono">
+                          <span>MD5: <code className="text-text">{out.locked_md5 || 'Tracked in dvc.lock'}</code></span>
+                          {out.size_bytes && <span>Size: {(out.size_bytes / 1024).toFixed(1)} KB</span>}
+                        </div>
+
+                        {/* Download Options for Modified CSVs */}
+                        {downloadableFiles.length > 0 && (
+                          <div className="pt-2 border-t border-border/60">
+                            <span className="text-[10px] font-semibold text-muted uppercase block mb-1.5 flex items-center">
+                              <Download className="w-3 h-3 mr-1 text-primary" />
+                              Download Stage Output {downloadableFiles.some(f => f.is_csv) ? 'Modified CSV(s)' : 'File(s)'}:
+                            </span>
+                            <div className="flex flex-wrap gap-2">
                               {downloadableFiles.map(file => {
                                 const isDownloading = downloadingPath === file.path;
                                 return (
@@ -612,38 +877,54 @@ export default function PipelineExplorer() {
                                     key={file.path}
                                     onClick={() => handleDownload(file.path, file.name)}
                                     disabled={isDownloading}
-                                    title={file.size_bytes ? `${file.name} (${kb(file.size_bytes)})` : file.name}
-                                    className="inline-flex items-center h-6 px-2 border border-border rounded-md text-xs text-text hover:bg-background cursor-pointer disabled:opacity-50"
+                                    className="inline-flex items-center px-3 py-1.5 bg-surface hover:bg-primary/10 border border-border hover:border-primary/40 rounded text-xs font-semibold text-text hover:text-primary transition-all shadow-2xs cursor-pointer disabled:opacity-50"
                                   >
                                     {isDownloading ? (
-                                      <RefreshCw className="w-3 h-3 mr-1 animate-spin text-muted" />
+                                      <RefreshCw className="w-3 h-3 mr-1.5 animate-spin text-primary" />
                                     ) : (
-                                      <Download className="w-3 h-3 mr-1 text-muted" />
+                                      <Download className="w-3 h-3 mr-1.5 text-primary" />
                                     )}
-                                    {file.name}
+                                    <span>Download {file.name}</span>
+                                    {file.is_csv && (
+                                      <span className="ml-1.5 text-[9px] bg-primary/15 text-primary px-1.5 py-0.2 rounded font-mono font-bold">
+                                        CSV
+                                      </span>
+                                    )}
+                                    {file.size_bytes && (
+                                      <span className="ml-1 text-[10px] font-normal text-muted">
+                                        ({(file.size_bytes / 1024).toFixed(1)} KB)
+                                      </span>
+                                    )}
                                   </button>
                                 );
                               })}
                             </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
-              <div className="px-4 py-2 text-xs text-muted">
-                Verified via schema 2.0 in dvc.lock · deterministic with seed 42
+              {/* Last Run Info */}
+              <div className="pt-3 border-t border-border flex items-center justify-between text-xs text-muted">
+                <span className="flex items-center">
+                  <Clock className="w-3.5 h-3.5 mr-1" />
+                  Verified via schema 2.0 in dvc.lock
+                </span>
+                <span className="font-mono text-primary font-medium">
+                  Determinism: Guaranteed via seed 42
+                </span>
               </div>
-            </>
+            </div>
           ) : (
-            <p className="px-4 py-10 text-center text-xs text-muted">
-              Select a stage to inspect its parameters, dependencies and artifacts.
-            </p>
+            <div className="bg-surface p-12 rounded-lg border border-border text-center text-muted">
+              Select a stage from the left to inspect its parameters, dependencies, and artifacts.
+            </div>
           )}
         </div>
       </div>
-    </Page>
+    </div>
   );
 }

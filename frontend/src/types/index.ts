@@ -34,14 +34,17 @@ export interface AuditReport {
   experiment_id: string;
   comparison_id?: string;
   active_dataset?: DatasetRecord;
+  target_dataset?: DatasetRecord;
+  comparison_dataset?: DatasetRecord;
   overall_status: AuditStatus;
   summary: {
     dataset_name?: string;
+    comparison_dataset_name?: string;
     total_checks: number;
     pass_count: number;
     warning_count: number;
     fail_count: number;
-    dataset_hash: string;
+    dataset_hash: string | null;
     accuracy: number;
     roc_auc: number;
     python_version: string;
@@ -52,6 +55,7 @@ export interface AuditReport {
 
 export interface DependencyInfo {
   path: string;
+  display_path?: string;
   exists_on_disk: boolean;
   locked_md5?: string | null;
   size_bytes?: number | null;
@@ -101,6 +105,8 @@ export interface ProjectInfo {
     accuracy?: number;
     roc_auc?: number;
   };
+  results_stale?: boolean;
+  results_dataset_name?: string | null;
   dvc_status: {
     dvc_yaml_present: boolean;
     dvc_lock_present: boolean;

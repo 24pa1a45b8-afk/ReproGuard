@@ -13,6 +13,7 @@ from sklearn.preprocessing import StandardScaler
 
 IN = "data/prepared/wine.csv"
 OUT_DIR = "data/features"
+MAX_CATEGORIES = 50
 
 
 def main():
@@ -28,18 +29,22 @@ def main():
     numeric_cols = X.select_dtypes(include=["number"]).columns
     X_num = X[numeric_cols].fillna(X[numeric_cols].median())
     cat_cols = X.select_dtypes(exclude=["number"]).columns
+    # One-hot encoding an ID/date/free-text column creates one feature per row; skip those
+    high_card = [c for c in cat_cols if X[c].nunique() > MAX_CATEGORIES]
+    if high_card:
+        print(f"featurize: dropped high-cardinality columns {high_card}")
+        cat_cols = cat_cols.drop(high_card)
     if len(cat_cols) > 0:
         X_cat = pd.get_dummies(X[cat_cols], drop_first=True)
         X = pd.concat([X_num, X_cat], axis=1)
     else:
         X = X_num
 
-    stratify_col = y if y.value_counts().min() >= 2 else None
     X_train, X_test, y_train, y_test = train_test_split(
         X, y,
         test_size=split["test_size"],
         random_state=split["seed"],
-        stratify=stratify_col,            # only stratify if classes have >= 2 members
+        stratify=y,            # keep the good/bad ratio identical in train & test
     )
 
     if featurize["scaler"] == "standard":

@@ -1,7 +1,10 @@
+import csv
+import io
 import os
 import sys
 import json
 import hashlib
+import math
 import shutil
 import re
 from datetime import datetime
@@ -12,6 +15,7 @@ import yaml
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import subprocess
 import urllib.request
@@ -46,15 +50,50 @@ def load_yaml(filepath: Path) -> Dict[str, Any]:
     with open(filepath, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
+def drop_non_finite(value: Any) -> Any:
+    # json.load accepts NaN/Infinity, but JSON responses reject them (HTTP 500)
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: drop_non_finite(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [drop_non_finite(v) for v in value]
+    return value
+
 def load_json(filepath: Path) -> Dict[str, Any]:
     if not filepath.exists():
         return {}
     with open(filepath, "r", encoding="utf-8") as f:
-        return json.load(f) or {}
+        return drop_non_finite(json.load(f)) or {}
+
+def metric_value(value: Any, default: float) -> float:
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return float(value)
+    return default
 
 def save_json(filepath: Path, data: Any):
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    # Write to a temp file first so a crash mid-write can't corrupt the registry
+    tmp_path = filepath.with_name(filepath.name + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(drop_non_finite(data), f, indent=2, allow_nan=False)
+    os.replace(tmp_path, filepath)
+
+def detect_separator(header_line: str) -> str:
+    return ";" if header_line.count(";") > header_line.count(",") else ","
+
+def read_csv_preview(filepath: Path, max_rows: int = 5) -> Dict[str, Any]:
+    with open(filepath, "r", encoding="utf-8-sig", errors="ignore", newline="") as f:
+        sep = detect_separator(f.readline())
+        f.seek(0)
+        reader = csv.reader(f, delimiter=sep)
+        columns = [c.strip() for c in next(reader, [])]
+        rows = []
+        for row in reader:
+            if len(rows) >= max_rows:
+                break
+            if row:
+                rows.append(row)
+    return {"columns": columns, "rows": rows}
 
 # --- DATASET VAULT REGISTRY INITIALIZATION ---
 def init_vault():
@@ -136,6 +175,39 @@ def get_active_dataset() -> Dict[str, Any]:
         if d["id"] == active_id:
             return d
     return reg.get("datasets", [{}])[0]
+
+def results_are_current(reg: Dict[str, Any], dataset: Dict[str, Any]) -> bool:
+    # True when the stage outputs on disk (prepared/features/model/metrics) came from this dataset
+    return bool(dataset.get("id")) and reg.get("results_dataset_id") == dataset.get("id")
+
+def current_metrics(reg: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[str, Any]:
+    if results_are_current(reg, dataset):
+        return load_json(BASE_DIR / "metrics.json")
+    # metrics.json belongs to another dataset: only report this dataset's own last run
+    last = dataset.get("last_run_metrics") or {}
+    return {k: last[k] for k in ("accuracy", "roc_auc") if last.get(k) is not None}
+
+def results_dataset_name(reg: Dict[str, Any]) -> Optional[str]:
+    return next((d["name"] for d in reg.get("datasets", []) if d["id"] == reg.get("results_dataset_id")), None)
+
+def detect_target_column(columns: List[str]) -> str:
+    # Must mirror the target selection in src/preprocess.py
+    if "quality" in columns:
+        return "quality"
+    candidates = [c for c in columns if any(k in c.lower() for k in ["target", "label", "value", "price", "class"])]
+    return candidates[0] if candidates else (columns[-1] if columns else "target")
+
+def dataset_file_label(path_str: str, dataset: Optional[Dict[str, Any]]) -> str:
+    # The DVC stages always read/write a file called "wine.csv"; show the dataset's own file name instead
+    if dataset and dataset.get("filename") and Path(path_str).name == "wine.csv":
+        return Path(path_str).with_name(dataset["filename"]).as_posix()
+    return path_str
+
+async def run_pipeline_if_stale() -> Optional[Dict[str, Any]]:
+    # Produce results for the active dataset unless the outputs on disk are already its own
+    if results_are_current(get_registry(), get_active_dataset()):
+        return None
+    return await run_in_threadpool(run_all_stages)
 
 # History of experiment runs
 experiments_history: List[Dict[str, Any]] = [
@@ -227,10 +299,13 @@ def activate_dataset(req: ActivateDatasetRequest):
 
 @app.post("/api/datasets/upload")
 async def upload_dataset_to_vault(file: UploadFile = File(...)):
-    if not file.filename.endswith(".csv"):
+    filename = Path(file.filename or "").name
+    if not filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Uploaded file must be a .csv file.")
         
     content = await file.read()
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="Uploaded CSV file is empty.")
     temp_md5 = hashlib.md5(content).hexdigest()
     
     reg = get_registry()
@@ -244,36 +319,51 @@ async def upload_dataset_to_vault(file: UploadFile = File(...)):
                 "status": "exists",
                 "message": f"Dataset already exists in vault as '{existing['name']}'. Re-activated!",
                 "dataset": existing,
-                "is_existing": True
+                "is_existing": True,
+                "pipeline_run": await run_pipeline_if_stale()
             }
             
     # Process new dataset
-    clean_name = Path(file.filename).stem.replace("_", " ").title()
-    slug = re.sub(r"[^a-zA-Z0-9]", "-", Path(file.filename).stem).lower()
-    dataset_id = f"ds-{slug}-{temp_md5[:6]}"
+    clean_name = Path(filename).stem.replace("_", " ").title()
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", Path(filename).stem).lower()
+    base_id = f"ds-{slug}-{temp_md5[:6]}"
+    existing_ids = {d["id"] for d in reg.get("datasets", [])}
+    dataset_id = base_id
+    suffix = 2
+    # Never reuse an ID or a vault folder, so no upload can overwrite another
+    while dataset_id in existing_ids or (VAULT_DIR / dataset_id).exists():
+        dataset_id = f"{base_id}-{suffix}"
+        suffix += 1
+
+    # Same file name with different content: keep both, with distinguishable names
+    existing_names = {d["name"] for d in reg.get("datasets", [])}
+    base_name = clean_name
+    suffix = 2
+    while clean_name in existing_names:
+        clean_name = f"{base_name} ({suffix})"
+        suffix += 1
     
     ds_dir = VAULT_DIR / dataset_id
     ds_dir.mkdir(parents=True, exist_ok=True)
-    target_path = ds_dir / file.filename
+    target_path = ds_dir / filename
     
     with open(target_path, "wb") as f:
         f.write(content)
         
     # Analyze CSV
-    text_content = content.decode("utf-8", errors="ignore")
+    text_content = content.decode("utf-8-sig", errors="ignore")
     lines = [l for l in text_content.splitlines() if l.strip()]
     header = lines[0] if lines else ""
-    sep = ";" if header.count(";") > header.count(",") else ","
-    columns = [c.strip().strip('"').strip("'") for c in header.split(sep)]
+    sep = detect_separator(header)
+    columns = [c.strip() for c in next(csv.reader(io.StringIO(header), delimiter=sep), [])]
     
     # Identify target column
-    target_candidates = [c for c in columns if any(k in c.lower() for k in ["quality", "target", "label", "value", "price", "class"])]
-    target_col = target_candidates[0] if target_candidates else (columns[-1] if columns else "target")
+    target_col = detect_target_column(columns)
     
     new_dataset = {
         "id": dataset_id,
         "name": clean_name,
-        "filename": file.filename,
+        "filename": filename,
         "path": str(target_path.relative_to(BASE_DIR)).replace("\\", "/"),
         "size_bytes": len(content),
         "md5_hash": temp_md5,
@@ -298,7 +388,25 @@ async def upload_dataset_to_vault(file: UploadFile = File(...)):
         "status": "success",
         "message": f"Saved new dataset '{clean_name}' to vault and set as active.",
         "dataset": new_dataset,
-        "is_existing": False
+        "is_existing": False,
+        # Run the pipeline right away so results belong to the uploaded dataset
+        "pipeline_run": await run_pipeline_if_stale()
+    }
+
+@app.get("/api/datasets/{dataset_id}/preview")
+def preview_dataset(dataset_id: str):
+    target = next((d for d in get_registry().get("datasets", []) if d["id"] == dataset_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="Dataset ID not found in vault.")
+    stored_file = BASE_DIR / target["path"]
+    if not stored_file.is_file():
+        raise HTTPException(status_code=404, detail=f"Stored file for '{target['name']}' is missing from the vault.")
+    preview = read_csv_preview(stored_file)
+    return {
+        "dataset_id": dataset_id,
+        "name": target["name"],
+        "columns": preview["columns"],
+        "preview_rows": preview["rows"]
     }
 
 @app.post("/api/dataset/load-sample")
@@ -316,12 +424,7 @@ def get_dataset_status():
     preview = []
     if raw_file.exists():
         try:
-            with open(raw_file, "r", encoding="utf-8", errors="ignore") as f:
-                header = f.readline()
-                sep = ";" if header.count(";") > header.count(",") else ","
-                for i, line in enumerate(f):
-                    if i < 5:
-                        preview.append(line.strip().split(sep))
+            preview = read_csv_preview(raw_file)["rows"]
         except Exception:
             pass
             
@@ -345,8 +448,9 @@ def get_dataset_status():
 @app.get("/api/project")
 def get_project():
     params = load_yaml(BASE_DIR / "params.yaml")
-    metrics = load_json(BASE_DIR / "metrics.json")
     active = get_active_dataset()
+    reg = get_registry()
+    metrics = current_metrics(reg, active)
     
     raw_wine_file = BASE_DIR / "data" / "raw" / "wine.csv"
     cur_hash = calculate_md5(raw_wine_file) if raw_wine_file.exists() else None
@@ -370,6 +474,8 @@ def get_project():
             "label": "Documented baseline results (Wine Quality)"
         },
         "last_recorded_metrics": metrics,
+        "results_stale": not results_are_current(reg, active),
+        "results_dataset_name": results_dataset_name(reg),
         "dataset_info": {
             "exists": raw_wine_file.exists(),
             "name": active["name"],
@@ -398,6 +504,11 @@ def get_pipeline():
     lock_stages = dvc_lock.get("stages", {})
     active = get_active_dataset()
 
+    reg = get_registry()
+    results_current = results_are_current(reg, active)
+    # Dataset the outputs on disk were produced from (may differ from the active one)
+    results_ds = next((d for d in reg.get("datasets", []) if d["id"] == reg.get("results_dataset_id")), None)
+
     result_stages = []
     for stage_name, stage_def in stages_yaml.items():
         lock_info = lock_stages.get(stage_name, {})
@@ -409,6 +520,7 @@ def get_pipeline():
             lock_dep = next((d for d in lock_info.get("deps", []) if d.get("path") == dep), None)
             deps_info.append({
                 "path": dep,
+                "display_path": dataset_file_label(dep, active),
                 "exists_on_disk": disk_exists,
                 "locked_md5": lock_dep.get("md5") if lock_dep else None,
                 "size_bytes": lock_dep.get("size") if lock_dep else (dep_path.stat().st_size if disk_exists and not dep_path.is_dir() else None)
@@ -426,7 +538,7 @@ def get_pipeline():
                     if f.is_file():
                         files_list.append({
                             "path": str(f.relative_to(BASE_DIR)).replace("\\", "/"),
-                            "name": f.name,
+                            "name": dataset_file_label(f.name, results_ds),
                             "is_csv": f.suffix.lower() == ".csv",
                             "size_bytes": f.stat().st_size
                         })
@@ -470,7 +582,11 @@ def get_pipeline():
                     "files": files_list
                 })
 
-        status = "Completed" if lock_info else "Needs verification"
+        if not results_current:
+            # Outputs on disk were produced from a different dataset
+            status = "Not run"
+        else:
+            status = "Completed" if lock_info else "Needs verification"
         
         result_stages.append({
             "id": stage_name,
@@ -488,6 +604,8 @@ def get_pipeline():
     return {
         "pipeline_name": f"{active['name']} Pipeline",
         "active_dataset": active,
+        "results_stale": not results_current,
+        "results_dataset_name": results_dataset_name(reg),
         "stages": result_stages
     }
 
@@ -517,11 +635,11 @@ def get_metrics():
     metrics_path = BASE_DIR / "metrics.json"
     if not metrics_path.exists():
         raise HTTPException(status_code=404, detail="metrics.json not found")
-    data = load_json(metrics_path)
     active = get_active_dataset()
+    data = current_metrics(get_registry(), active)
     return {
-        "accuracy": data.get("accuracy", 0.784375),
-        "roc_auc": data.get("roc_auc", 0.8747988539581615),
+        "accuracy": metric_value(data.get("accuracy"), 0.784375),
+        "roc_auc": metric_value(data.get("roc_auc"), 0.8747988539581615),
         "dataset_name": active["name"],
         "source": "metrics.json",
         "hash": calculate_md5(metrics_path),
@@ -538,15 +656,15 @@ def get_provenance():
     cur_hash = calculate_md5(raw_wine_file) if raw_wine_file.exists() else active["md5_hash"]
     locked_hash = "2daeecee174368f8a33b82c8cccae3a5"
     
-    metrics = load_json(BASE_DIR / "metrics.json")
-    cur_acc = metrics.get("accuracy", 0.784375)
-    cur_auc = metrics.get("roc_auc", 0.8747988539581615)
+    metrics = current_metrics(get_registry(), active)
+    cur_acc = metrics.get("accuracy", "not run yet")
+    cur_auc = metrics.get("roc_auc", "not run yet")
 
     nodes = [
         {
             "id": "node-data",
             "type": "Dataset",
-            "name": f"data/raw/wine.csv ({active['name']})",
+            "name": f"data/raw/{active['filename']}",
             "fingerprint": cur_hash,
             "provenance_fields": {
                 "dataset_name": active["name"],
@@ -640,24 +758,40 @@ def get_experiments():
     }
 
 class AuditRequest(BaseModel):
-    experiment_id: str = "exp-baseline"
+    experiment_id: Optional[str] = "exp-baseline"
     comparison_id: Optional[str] = None
+    target_dataset_id: Optional[str] = None
+    comparison_dataset_id: Optional[str] = None
 
 @app.post("/api/audits")
 def run_audit(req: AuditRequest):
     audit_id = f"audit-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    active = get_active_dataset()
+    reg = get_registry()
+    
+    target_ds = None
+    if req.target_dataset_id:
+        for d in reg.get("datasets", []):
+            if d["id"] == req.target_dataset_id:
+                target_ds = d
+                break
+    if not target_ds:
+        target_ds = get_active_dataset()
+        
+    comp_ds = None
+    if req.comparison_dataset_id:
+        for d in reg.get("datasets", []):
+            if d["id"] == req.comparison_dataset_id:
+                comp_ds = d
+                break
+
+    active = target_ds
 
     raw_wine_file = BASE_DIR / "data" / "raw" / "wine.csv"
-    dvc_yaml_file = BASE_DIR / "dvc.yaml"
-    dvc_lock_file = BASE_DIR / "dvc.lock"
     params_file = BASE_DIR / "params.yaml"
     reqs_file = BASE_DIR / "requirements.txt"
-    metrics_file = BASE_DIR / "metrics.json"
 
-    dvc_lock = load_yaml(dvc_lock_file)
     params = load_yaml(params_file)
-    metrics = load_json(metrics_file)
+    metrics = current_metrics(reg, active)
 
     findings = []
 
@@ -764,7 +898,7 @@ def run_audit(req: AuditRequest):
         })
 
     # Category E: Results Verification
-    recorded_acc = metrics.get("accuracy", 0.784375)
+    recorded_acc = metric_value(metrics.get("accuracy"), 0.784375)
     baseline_acc = 0.784375
     tolerance = 0.001
     delta = abs(recorded_acc - baseline_acc)
@@ -788,6 +922,50 @@ def run_audit(req: AuditRequest):
             "action": "Compare runs in the Experiments tab to analyze feature importance or metric shift."
         })
 
+    # Category F: Cross-Dataset Storage Comparison (if comparison dataset selected)
+    if comp_ds and comp_ds["id"] != active["id"]:
+        t_cols = set(active.get("columns", []))
+        c_cols = set(comp_ds.get("columns", []))
+        shared = t_cols & c_cols
+        is_same_hash = active.get("md5_hash") == comp_ds.get("md5_hash")
+        same_target = active.get("target_column") == comp_ds.get("target_column")
+
+        findings.append({
+            "category": "Storage Dataset Comparison",
+            "name": "Dataset Storage Identity & Volume",
+            "status": "PASS" if active["id"] == comp_ds["id"] else "WARNING",
+            "evidence": f"Target: '{active['name']}' ({active['rows']:,} rows, {len(t_cols)} cols) vs Comparison: '{comp_ds['name']}' ({comp_ds['rows']:,} rows, {len(c_cols)} cols).",
+            "explanation": "Comparing dataset scale and record volume directly across vault storage.",
+            "action": "Ensure test samples and evaluation metrics correspond to the intended task."
+        })
+
+        findings.append({
+            "category": "Storage Dataset Comparison",
+            "name": "Cryptographic Hash Divergence",
+            "status": "PASS" if is_same_hash else "WARNING",
+            "evidence": f"Target MD5: {active.get('md5_hash')} vs Comp MD5: {comp_ds.get('md5_hash')}.",
+            "explanation": "Identical hash verifies bitwise identical data; different hashes identify independent datasets.",
+            "action": "Verify if the comparison is cross-domain or version-based."
+        })
+
+        findings.append({
+            "category": "Storage Dataset Comparison",
+            "name": "Feature Schema & Column Overlap",
+            "status": "PASS" if t_cols == c_cols else "WARNING",
+            "evidence": f"Shared features: {len(shared)}/{max(len(t_cols), len(c_cols))} (Target: {len(t_cols)} cols, Comparison: {len(c_cols)} cols).",
+            "explanation": "Feature schema compatibility affects pipeline transferability and feature drift.",
+            "action": f"Review schema discrepancies: Target unique: [{', '.join(list(t_cols - c_cols)[:3])}], Comparison unique: [{', '.join(list(c_cols - t_cols)[:3])}]."
+        })
+
+        findings.append({
+            "category": "Storage Dataset Comparison",
+            "name": "Target Variable Alignment",
+            "status": "PASS" if same_target else "WARNING",
+            "evidence": f"Target Label: '{active.get('target_column')}' vs Comparison Label: '{comp_ds.get('target_column')}'.",
+            "explanation": "Models trained on differing targets optimize different predictive problems.",
+            "action": "None required if comparing separate problem formulations."
+        })
+
     pass_count = sum(1 for f in findings if f["status"] == "PASS")
     warn_count = sum(1 for f in findings if f["status"] == "WARNING")
     fail_count = sum(1 for f in findings if f["status"] == "FAIL")
@@ -800,22 +978,26 @@ def run_audit(req: AuditRequest):
         "experiment_id": req.experiment_id,
         "comparison_id": req.comparison_id,
         "active_dataset": active,
+        "target_dataset": active,
+        "comparison_dataset": comp_ds,
         "overall_status": overall_status,
         "summary": {
             "dataset_name": active["name"],
+            "comparison_dataset_name": comp_ds["name"] if comp_ds else None,
             "total_checks": len(findings),
             "pass_count": pass_count,
             "warning_count": warn_count,
             "fail_count": fail_count,
             "dataset_hash": cur_hash,
             "accuracy": recorded_acc,
-            "roc_auc": metrics.get("roc_auc", 0.8747988539581615),
+            "roc_auc": metric_value(metrics.get("roc_auc"), 0.8747988539581615),
             "python_version": sys.version.split()[0]
         },
         "findings": findings,
         "recommendations": [
-            f"Active dataset: '{active['name']}' ({active['rows']} rows).",
-            "Use the Experiments tab to perform diff comparisons across datasets.",
+            f"Audited Target Storage Dataset: '{active['name']}' ({active['rows']:,} rows).",
+            f"Comparison Reference: '{comp_ds['name'] if comp_ds else 'Baseline Repository Benchmark'}'.",
+            "Use the Experiments tab to perform diff comparisons across runs.",
             "To re-audit the official benchmark, activate 'Wine Quality (Baseline)'."
         ]
     }
@@ -842,6 +1024,11 @@ def run_all_stages():
         {"name": "evaluate", "script": "src/evaluate.py"}
     ]
     
+    # Until every stage succeeds, the outputs on disk belong to no dataset
+    reg = get_registry()
+    reg["results_dataset_id"] = None
+    save_json(REGISTRY_FILE, reg)
+
     logs = []
     for stage in stages:
         script_path = BASE_DIR / stage["script"]
@@ -879,12 +1066,13 @@ def run_all_stages():
     locked_hash = "2daeecee174368f8a33b82c8cccae3a5"
     params = load_yaml(BASE_DIR / "params.yaml")
     
-    acc = metrics.get("accuracy", 0.0)
-    roc = metrics.get("roc_auc", 0.0)
+    acc = metric_value(metrics.get("accuracy"), 0.0)
+    roc = metric_value(metrics.get("roc_auc"), 0.0)
     now_iso = datetime.now().isoformat()
     
     # Update active dataset's last_run_metrics in registry
     reg = get_registry()
+    reg["results_dataset_id"] = active["id"]
     for d in reg.get("datasets", []):
         if d["id"] == active["id"]:
             d["last_run_metrics"] = {
