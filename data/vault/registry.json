@@ -1,0 +1,177 @@
+{
+  "active_dataset_id": "ds-california-housing",
+  "datasets": [
+    {
+      "id": "ds-wine-baseline",
+      "name": "Wine Quality (Baseline)",
+      "filename": "wine.csv",
+      "path": "data/vault/ds-wine-baseline/wine.csv",
+      "size_bytes": 84199,
+      "md5_hash": "2daeecee174368f8a33b82c8cccae3a5",
+      "rows": 1599,
+      "columns": [
+        "fixed acidity",
+        "volatile acidity",
+        "citric acid",
+        "residual sugar",
+        "chlorides",
+        "free sulfur dioxide",
+        "total sulfur dioxide",
+        "density",
+        "pH",
+        "sulphates",
+        "alcohol",
+        "quality"
+      ],
+      "target_column": "quality",
+      "is_baseline": true,
+      "uploaded_at": "2026-03-20T10:00:00Z",
+      "last_run_metrics": {
+        "accuracy": 0.784375,
+        "roc_auc": 0.8747988539581615,
+        "timestamp": "2026-10-10T02:33:31.095380"
+      }
+    },
+    {
+      "id": "ds-california-housing",
+      "name": "California Housing",
+      "filename": "california_housing.csv",
+      "path": "data/vault/ds-california-housing/california_housing.csv",
+      "size_bytes": 1423529,
+      "md5_hash": "d1c47305887e2252bf1ccbd74ff159a6",
+      "rows": 20640,
+      "columns": [
+        "longitude",
+        "latitude",
+        "housing_median_age",
+        "total_rooms",
+        "total_bedrooms",
+        "population",
+        "households",
+        "median_income",
+        "median_house_value",
+        "ocean_proximity"
+      ],
+      "target_column": "median_house_value",
+      "is_baseline": false,
+      "uploaded_at": "2026-10-09T14:30:00Z",
+      "last_run_metrics": {
+        "accuracy": 0.8687015503875969,
+        "roc_auc": 0.9425317979998098,
+        "timestamp": "2026-10-10T03:32:00.119365"
+      }
+    },
+    {
+      "id": "ds-engineering-student-realistic-eda-dataset-b5eaf3",
+      "name": "Engineering Student Realistic Eda Dataset",
+      "filename": "Engineering_Student_Realistic_EDA_Dataset.csv",
+      "path": "data/vault/ds-engineering-student-realistic-eda-dataset-b5eaf3/Engineering_Student_Realistic_EDA_Dataset.csv",
+      "size_bytes": 18649,
+      "md5_hash": "b5eaf30bd6c2f56e2a27c1f0c9598b7c",
+      "rows": 300,
+      "columns": [
+        "Student_ID",
+        "Department",
+        "Year",
+        "Gender",
+        "Daily_Study_Hours",
+        "Daily_Mobile_Usage_Hours",
+        "Sleep_Hours",
+        "Attendance_Percentage",
+        "Internal_Marks",
+        "Coding_Practice_Hours",
+        "AI_Tools_Usage",
+        "Stress_Level",
+        "Screen_Time",
+        "Happiness_Score"
+      ],
+      "target_column": "Happiness_Score",
+      "is_baseline": false,
+      "uploaded_at": "2026-10-09T20:10:49.993207",
+      "last_run_metrics": {
+        "accuracy": 0.8833333333333333,
+        "roc_auc": 0.9466666666666667,
+        "timestamp": "2026-10-10T03:25:44.360051"
+      }
+    },
+    {
+      "id": "ds-portfolio-project---data-cleaning-37fa67",
+      "name": "Portfolio Project - Data Cleaning",
+      "filename": "Portfolio Project - Data Cleaning.csv",
+      "path": "data/vault/ds-portfolio-project---data-cleaning-37fa67/Portfolio Project - Data Cleaning.csv",
+      "size_bytes": 16054,
+      "md5_hash": "37fa678518cb115ec3f6a8c1aeff6941",
+      "rows": 233,
+      "columns": [
+        "--",
+        "SQL",
+        "Project",
+        "-",
+        "Data",
+        "Cleaning",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "target_column": "",
+      "is_baseline": false,
+      "uploaded_at": "2026-10-10T03:21:56.197955",
+      "last_run_metrics": {
+        "accuracy": 1.0,
+        "roc_auc": null,
+        "timestamp": "2026-10-10T03:30:07.565386"
+      }
+    },
+    {
+      "id": "ds-opsd-germany-daily-f0f446",
+      "name": "Opsd Germany Daily",
+      "filename": "opsd_germany_daily.csv",
+      "path": "data/vault/ds-opsd-germany-daily-f0f446/opsd_germany_daily.csv",
+      "size_bytes": 217983,
+      "md5_hash": "f0f446ebbc7638b3c4de1dbebd73f9bb",
+      "rows": 4383,
+      "columns": [
+        "Date",
+        "Consumption",
+        "Wind",
+        "Solar",
+        "Wind+Solar"
+      ],
+      "target_column": "Wind+Solar",
+      "is_baseline": false,
+      "uploaded_at": "2026-10-10T03:41:24.603598",
+      "last_run_metrics": {
+        "accuracy": 0.750285062713797,
+        "roc_auc": 0.9625057251113794,
+        "timestamp": "2026-10-10T03:44:46.294396"
+      }
+    }
+  ]
+}

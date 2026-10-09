@@ -1,0 +1,16 @@
+# Pipeline knobs. Each top-level block is wired into a stage via `-p` in dvc.yaml.
+# Changing a value here makes ONLY the stages that depend on that key go stale.
+
+preprocess:
+  quality_threshold: 6      # quality >= 6 -> "good" (1), else 0  (binary target)
+
+split:
+  test_size: 0.2
+  seed: 42                  # drives BOTH the split and the model's random_state -> determinism
+
+featurize:
+  scaler: standard          # "standard" -> StandardScaler; anything else -> no scaling
+
+train:
+  n_estimators: 100
+  max_depth: 8

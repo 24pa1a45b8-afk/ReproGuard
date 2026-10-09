@@ -1,0 +1,12 @@
+md5: 5366317d5950e7de89a78b22189b8203
+frozen: true
+deps:
+- checksum: '329379543392754289454614288034837784210'
+  hash: md5
+  path: 
+    https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv
+outs:
+- md5: 2daeecee174368f8a33b82c8cccae3a5
+  size: 84199
+  hash: md5
+  path: wine.csv

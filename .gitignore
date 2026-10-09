@@ -1,0 +1,5 @@
+.venv/
+/model.pkl
+/plots
+/dvc_plots
+.env

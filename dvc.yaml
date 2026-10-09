@@ -1,0 +1,48 @@
+stages:
+  preprocess:
+    cmd: python src/preprocess.py
+    deps:
+    - data/raw/wine.csv
+    - src/preprocess.py
+    params:
+    - preprocess.quality_threshold
+    outs:
+    - data/prepared
+  featurize:
+    cmd: python src/featurize.py
+    deps:
+    - data/prepared
+    - src/featurize.py
+    params:
+    - featurize.scaler
+    - split.seed
+    - split.test_size
+    outs:
+    - data/features
+  train:
+    cmd: python src/train.py
+    deps:
+    - data/features
+    - src/train.py
+    params:
+    - split.seed
+    - train.max_depth
+    - train.n_estimators
+    outs:
+    - model.pkl
+  evaluate:
+    cmd: python src/evaluate.py
+    deps:
+    - data/features
+    - model.pkl
+    - src/evaluate.py
+    plots:
+    - plots/roc.csv:
+        x: fpr
+        y: tpr
+        x_label: False Positive Rate
+        y_label: True Positive Rate
+        title: ROC curve
+    metrics:
+    - metrics.json:
+        cache: false

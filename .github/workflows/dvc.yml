@@ -1,0 +1,60 @@
+name: DVC Reproduce
+
+# On every push / PR, prove the committed code + data reproduce the same model.
+# This is the CI skeleton real ML teams use; CML (Continuous Machine Learning)
+# adds the "post the metric diff as a PR comment" step (sketched at the bottom).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Fetch DVC-tracked data/model objects.
+      # SELF-CONTAINED DEMO: pull from the in-repo store `.dvcstore` (committed to
+      # Git, so it's present on the runner). No cloud, no secrets.
+      #
+      # PRODUCTION: delete `-r ciremote`, make an S3 remote the default, and expose
+      # creds as GitHub secrets, e.g.:
+      #   env:
+      #     AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+      #     AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      #   run: dvc pull
+      - name: Pull DVC-tracked data
+        run: dvc pull -r ciremote
+
+      # Reproduce the pipeline. With data pulled and a matching dvc.lock this VERIFIES
+      # the committed state is reproducible; on a PR that changes code/params it would
+      # rebuild only the affected stages (Lesson 2 incrementality).
+      - name: Reproduce pipeline
+        run: dvc repro
+
+      - name: Show metrics
+        run: dvc metrics show
+
+      # --- PRODUCTION EXTRA (CML): comment the metric delta vs main on the PR ---
+      # - name: Metrics diff report
+      #   run: |
+      #     echo "## Metrics vs main" > report.md
+      #     dvc metrics diff main --md >> report.md
+      # - uses: iterative/setup-cml@v2
+      # - run: cml comment create report.md
+      #   env:
+      #     REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}

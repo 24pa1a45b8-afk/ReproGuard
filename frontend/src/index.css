@@ -1,0 +1,175 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-background: #191919;
+  --color-surface: #202020;
+  --color-panel: #1E1E1E;
+  --color-raised: #2A2A2A;
+  --color-text: #F0F0F0;
+  --color-muted: #A0A0A0;
+  --color-border: #353535;
+  --color-primary: #1685F8;
+  --color-cell: #174A7A;
+  --color-accent: #63B982;
+  --color-success: #63B982;
+  --color-warning: #E5B45B;
+  --color-error: #E16B6B;
+  --font-sans: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', Consolas, 'Liberation Mono', monospace;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-text font-sans antialiased;
+    font-size: 13px;
+  }
+
+  /* Numbers line up in columns, like a spreadsheet grid */
+  table,
+  code,
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+  }
+
+  thead th {
+    @apply font-medium text-muted;
+  }
+
+  ::selection {
+    background-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 1px;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #4A4A4A transparent;
+  }
+
+  select,
+  input,
+  textarea {
+    color-scheme: dark;
+  }
+}
+
+@layer components {
+  /* Spreadsheet-style grid: hairlines both ways, compact rows, row-number gutter */
+  .sheet {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 13px;
+    text-align: left;
+  }
+
+  .sheet th,
+  .sheet td {
+    height: 32px;
+    padding: 0 12px;
+    border-right: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--color-border);
+    white-space: nowrap;
+  }
+
+  .sheet th {
+    font-weight: 500;
+    color: var(--color-text);
+    background: var(--color-surface);
+  }
+
+  .sheet td {
+    color: var(--color-text);
+  }
+
+  .sheet .rn {
+    width: 44px;
+    min-width: 44px;
+    padding: 0 10px;
+    text-align: right;
+    font-size: 12px;
+    color: var(--color-muted);
+  }
+
+  .sheet .num {
+    text-align: right;
+  }
+
+  .sheet td.wrap {
+    white-space: normal;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    line-height: 1.45;
+  }
+
+  .sheet tbody tr:hover td {
+    background: var(--color-raised);
+  }
+
+  .sheet tbody tr.is-selected td {
+    background: color-mix(in srgb, var(--color-primary) 16%, var(--color-surface));
+  }
+
+  .sheet tbody tr.is-clickable {
+    cursor: pointer;
+  }
+
+  /* Icon button used in the toolbars */
+  .tool {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 5px;
+    color: var(--color-muted);
+    cursor: pointer;
+  }
+
+  .tool:hover:not(:disabled) {
+    background: var(--color-raised);
+    color: var(--color-text);
+  }
+
+  .tool:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  .tool.is-on {
+    background: var(--color-raised);
+    color: var(--color-text);
+  }
+
+  .field {
+    height: 28px;
+    width: 100%;
+    background: var(--color-background);
+    border: 1px solid var(--color-border);
+    border-radius: 5px;
+    padding: 0 8px;
+    font-size: 12px;
+    color: var(--color-text);
+  }
+
+  .field:focus {
+    outline: none;
+    border-color: var(--color-primary);
+  }
+
+  .caps {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+}
